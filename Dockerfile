@@ -31,6 +31,7 @@ COPY main.py .
 COPY parse_legislation_codes.py .
 COPY pdf_to_markdown.py .
 COPY full_response.js .
+COPY compare_chunks.py .
 
 # Copy legislation and utility files
 COPY legislation_util/ /app/legislation_util/
