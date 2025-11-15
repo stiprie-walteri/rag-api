@@ -6,8 +6,6 @@ from pathlib import Path
 
 # Hard-coded inputs. Change these as needed.
 LEGISLATION_FILE = "legislation.json"
-QUERY_CODE = "AMC 145.A.25(d)"  # e.g. "145.A.10", "AMC 145.A.10", "145.A.25(c)"
-
 
 def normalize_code(s):
     """Remove all whitespace so formatting does not matter for comparison."""
@@ -343,7 +341,8 @@ def get_subsections_for_code(code, leg):
     }
 
 
-if __name__ == "__main__":
-    legislation = load_legislation()
-    result = get_subsections_for_code(QUERY_CODE, legislation)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+# if __name__ == "__main__":
+#     querry_code == "AMC2 145.A.15" 
+#     legislation = load_legislation()
+#     result = get_subsections_for_code(querry_code, legislation)
+#     print(json.dumps(result, ensure_ascii=False, indent=2))
