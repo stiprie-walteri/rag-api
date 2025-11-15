@@ -5,3 +5,5 @@ python-multipart==0.0.6
 python-dotenv==1.0.0
 pymupdf
 pymupdf4llm
+dotenv
+openai
