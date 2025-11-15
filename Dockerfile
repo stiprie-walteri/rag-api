@@ -29,6 +29,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY main.py .
 COPY parse_legislation_codes.py .
+COPY pdf_to_markdown.py .
 
 # Change ownership to non-root user
 RUN chown -R appuser:appuser /app

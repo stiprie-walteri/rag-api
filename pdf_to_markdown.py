@@ -4,6 +4,7 @@ Converts org_submission.pdf to markdown format for further analysis
 """
 
 import pymupdf4llm
+import sys
 
 def convert_pdf_to_markdown(pdf_path: str, output_path: str) -> None:
     """
@@ -26,7 +27,10 @@ def convert_pdf_to_markdown(pdf_path: str, output_path: str) -> None:
     print(f"Total characters: {len(md_text)}")
 
 if __name__ == "__main__":
-    pdf_path = "org_submission.pdf"
-    output_path = "org_submission.md"
+    if len(sys.argv) != 3:
+        print("Usage: python pdf_to_markdown.py <input_pdf_path> <output_md_path>")
+        sys.exit(1)
     
+    pdf_path = sys.argv[1]
+    output_path = sys.argv[2]
     convert_pdf_to_markdown(pdf_path, output_path)

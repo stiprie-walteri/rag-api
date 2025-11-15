@@ -5,6 +5,7 @@ Extracts legislation codes from organization submission markdown and outputs str
 
 import re
 import json
+import sys
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
@@ -362,11 +363,14 @@ class LegislationCodeParser:
 
 def main():
     """Main function to run the parser"""
-    parser = LegislationCodeParser()
+    if len(sys.argv) != 3:
+        print("Usage: python parse_legislation_codes.py <input_md_path> <output_json_path>")
+        sys.exit(1)
     
-    # Parse the cleaned markdown file
-    markdown_path = "org_submission.md"
-    output_path = "parsed_legislation_codes.json"
+    markdown_path = sys.argv[1]
+    output_path = sys.argv[2]
+    
+    parser = LegislationCodeParser()
     
     print(f"Parsing legislation codes from: {markdown_path}")
     result = parser.parse_markdown(markdown_path)

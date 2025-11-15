@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException
+import tempfile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -6,6 +7,7 @@ import uvicorn
 import os
 from dotenv import load_dotenv
 from parse_legislation_codes import LegislationCodeParser
+from pdf_to_markdown import convert_pdf_to_markdown
 
 # Load environment variables
 load_dotenv()
@@ -42,20 +44,41 @@ async def health_check():
         message="API is running successfully"
     )
 
-@app.get("/api/parse-legislation")
-async def parse_legislation():
+@app.post("/api/parse-legislation")
+async def parse_legislation(file: UploadFile = File(...)):
     """
-    Parse legislation codes from org_submission.md
-    Returns the structured JSON with extracted legislation codes
+    Upload a PDF file, convert it to Markdown, parse legislation codes, and return structured JSON.
     """
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+    
     try:
+        # Create temporary files for PDF and Markdown
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_pdf:
+            temp_pdf_path = temp_pdf.name
+            temp_pdf.write(await file.read())
+        
+        temp_md_path = temp_pdf_path.replace('.pdf', '.md')
+        
+        # Convert PDF to Markdown
+        convert_pdf_to_markdown(temp_pdf_path, temp_md_path)
+        
+        # Parse Markdown for legislation codes
         parser = LegislationCodeParser()
-        result = parser.parse_markdown("org_submission.md")
+        result = parser.parse_markdown(temp_md_path)
+        
+        # Clean up temporary files
+        os.unlink(temp_pdf_path)
+        os.unlink(temp_md_path)
+        
         return result
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="org_submission.md file not found")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error parsing legislation codes: {str(e)}")
+        # Clean up on error
+        if 'temp_pdf_path' in locals() and os.path.exists(temp_pdf_path):
+            os.unlink(temp_pdf_path)
+        if 'temp_md_path' in locals() and os.path.exists(temp_md_path):
+            os.unlink(temp_md_path)
+        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
