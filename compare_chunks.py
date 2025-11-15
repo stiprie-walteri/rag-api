@@ -14,6 +14,7 @@ from get_submission_chunks import get_submission_by_codes
 # Hard-coded inputs
 METRICS_FILE = "legislation_util/legislation_comparison_metrics.json"
 OUTPUT_FILE = "legislation_util/legislation_submission_issues.json"
+SUBMISSION_FILE = "parsed_legislation_codes.json"
 
 # Prompt template sent to OpenAI
 PROMPT_TEMPLATE = """
@@ -83,12 +84,28 @@ def load_metrics():
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
 
-def init_openai_from_env():
-    load_dotenv()
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY not set in environment or .env")
-    openai.api_key = api_key
+
+def load_submission_json():
+    """
+    Load parsed_legislation_codes.json for cross-referencing sections.
+    """
+    path = Path(SUBMISSION_FILE)
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def find_sections_for_code(code, submission_data):
+    """
+    Given a legislation code, find all section numbers in parsed_legislation_codes.json
+    where this code appears in the 'legislation_codes' list.
+    """
+    sections = submission_data.get("sections", [])
+    matching_sections = []
+    for section in sections:
+        if code in section.get("legislation_codes", []):
+            matching_sections.append(section["section_number"])
+    return matching_sections
+
 
 class Issue(BaseModel):
     code: str
@@ -97,6 +114,8 @@ class Issue(BaseModel):
     legislation_source: str
     # optional extra tag you were adding
     main_code: str | None = None
+    # NEW: List of section numbers in the submitted document where this code/issue appears
+    submission_sections: list[str] = []
 
 
 class IssueList(BaseModel):
@@ -113,9 +132,10 @@ def call_openai_for_issues(code, legislation_markdown, submission_text):
         submission_text=submission_text,
     )
     client = OpenAI()
-    response = client.responses.parse(
-        model="gpt-5-mini",
-        input=[
+    
+    completion = client.beta.chat.completions.parse(
+        model="gpt-4o-mini",
+        messages=[
             {
                 "role": "system",
                 "content": (
@@ -129,10 +149,10 @@ def call_openai_for_issues(code, legislation_markdown, submission_text):
                 "content": prompt,
             },
         ],
-        text_format=IssueList
+        response_format=IssueList
     )
 
-    return response.output_parsed
+    return completion.choices[0].message.parsed
 
 
 def main():
@@ -142,6 +162,7 @@ def main():
     metrics = load_metrics()
     path = Path("legislation_util/unique_sections_legislation.json")
     legislation = load_legislation(path)
+    submission_data = load_submission_json()
 
     all_main_codes_found = metrics.get("all_main_codes_found", [])
     if not isinstance(all_main_codes_found, list):
@@ -173,8 +194,12 @@ def main():
 
         result: IssueList = call_openai_for_issues(code, legislation_markdown, submission_text)
 
+        # Find sections in the submitted document that reference this code
+        submission_sections = find_sections_for_code(code, submission_data)
+
         for issue in result.issues:
             issue.main_code = issue.main_code or code
+            issue.submission_sections = submission_sections  # Add the sections
             all_issues.append(issue.model_dump())
 
     output = {
