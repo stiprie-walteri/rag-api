@@ -65,13 +65,25 @@ Submission:
 
 def init_openai_from_env():
     """
-    Load OPENAI_API_KEY from .env and configure openai.
+    Load OPENAI_API_KEY and OPENAI_MODEL from .env and configure openai.
     """
     load_dotenv()
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY not set in environment or .env")
     openai.api_key = api_key
+    # Ensure model is also set
+    get_openai_model()
+
+
+def get_openai_model():
+    """
+    Get the OpenAI model from environment.
+    """
+    model = os.getenv("OPENAI_MODEL")
+    if not model:
+        raise RuntimeError("OPENAI_MODEL not set in environment or .env")
+    return model
 
 
 def load_metrics():
@@ -140,7 +152,7 @@ def call_openai_for_issues(code, legislation_markdown, submission_text):
     client = OpenAI()
     
     completion = client.beta.chat.completions.parse(
-        model="gpt-5-mini",
+        model=get_openai_model(),
         messages=[
             {
                 "role": "system",
