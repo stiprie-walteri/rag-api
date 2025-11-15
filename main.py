@@ -20,7 +20,7 @@ from compare_chunks import init_openai_from_env, call_openai_for_issues, IssueLi
 load_dotenv()
 
 # Load mock response if available
-MOCK_RESPONSE_FILE = Path("full_response.js")
+MOCK_RESPONSE_FILE = Path("full_response.json")
 mock_response = None
 if MOCK_RESPONSE_FILE.exists():
     try:
@@ -54,6 +54,7 @@ class HealthResponse(BaseModel):
 class ParseResponse(BaseModel):
     markdown: str
     parsed_codes: dict
+    metrics: dict
     issues: dict
 
 @app.get("/api/healthz", response_model=HealthResponse)
@@ -168,6 +169,7 @@ async def parse_legislation(file: UploadFile = File(...)):
         return ParseResponse(
             markdown=full_markdown,
             parsed_codes=parsed_codes,
+            metrics=metrics,
             issues=issues_output
         )
     
