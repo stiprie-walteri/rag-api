@@ -50,7 +50,9 @@ class LegislationCodeParser:
                 subsection_codes = self._parse_subsections(subsections_text)
                 if subsection_codes:
                     for sub in subsection_codes:
-                        codes.append(f"145.A.{base_code}{sub}")
+                        # Add spaces between parenthesized parts like (c)(1) -> (c) (1)
+                        formatted_sub = re.sub(r'\)\s*\(', ') (', sub)
+                        codes.append(f"145.A.{base_code} {formatted_sub}")
                 else:
                     codes.append(f"145.A.{base_code}")
             else:
@@ -66,7 +68,9 @@ class LegislationCodeParser:
                 subsection_codes = self._parse_subsections(subsections_text)
                 if subsection_codes:
                     for sub in subsection_codes:
-                        codes.append(f"AMC 145.A.{base_code}{sub}")
+                        # Add spaces between parenthesized parts like (c)(1) -> (c) (1)
+                        formatted_sub = re.sub(r'\)\s*\(', ') (', sub)
+                        codes.append(f"AMC 145.A.{base_code} {formatted_sub}")
                 else:
                     codes.append(f"AMC 145.A.{base_code}")
             else:
@@ -82,7 +86,9 @@ class LegislationCodeParser:
                 subsection_codes = self._parse_subsections(subsections_text)
                 if subsection_codes:
                     for sub in subsection_codes:
-                        codes.append(f"GM 145.A.{base_code}{sub}")
+                        # Add spaces between parenthesized parts like (c)(1) -> (c) (1)
+                        formatted_sub = re.sub(r'\)\s*\(', ') (', sub)
+                        codes.append(f"GM 145.A.{base_code} {formatted_sub}")
                 else:
                     codes.append(f"GM 145.A.{base_code}")
             else:
