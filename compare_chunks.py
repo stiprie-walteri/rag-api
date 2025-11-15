@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from legislation_util.get_legislation_by_section import load_legislation, get_subsections_for_code
-from get_submission_chunks import get_submission_by_codes
+from get_submission_chunks import get_submission_by_codes, codes_match
 
 
 # Hard-coded inputs
@@ -36,7 +36,8 @@ Return a SINGLE JSON object with the following structure:
       "code": "string, the most specific legislation section or subsection (e.g. '145.A.25(c)(1)' or 'AMC1 145.A.25 (a)')",
       "submission_excerpt": "string, short verbatim excerpt from the submission that is problematic",
       "explanation": "string, short and clear explanation (2–4 sentences) of what is wrong or missing and why",
-      "legislation_source": "string, either the exact legislation quote or a concise paraphrase with the precise source id"
+      "legislation_source": "string, either the exact legislation quote or a concise paraphrase with the precise source id",
+      "severity": "string, one of 'info', 'warning', 'error' based on the criticality: 'info' for minor notes or clarifications, 'warning' for potential risks or ambiguities, 'error' for critical non-compliance or safety issues"
     }}
   ]
 }}
@@ -48,6 +49,7 @@ Rules:
 - "submission_excerpt" MUST be exact text copied from the submission (no paraphrase).
 - "legislation_source" MUST clearly identify the relevant part of the legislation (id plus text or a precise paraphrase).
 - Ignore any submission text that is a placeholder or non-descriptive (e.g., "Nil", "Not applicable", "N/A"). Only analyze substantive content.
+- Assign "severity" based on impact: "info" for informational or minor issues, "warning" for potential risks, "error" for critical safety or compliance failures.
 
 Legislation (Markdown):
 ---
@@ -98,12 +100,13 @@ def load_submission_json():
 def find_sections_for_code(code, submission_data):
     """
     Given a legislation code, find all section numbers in parsed_legislation_codes.json
-    where this code appears in the 'legislation_codes' list.
+    where this code appears in the 'legislation_codes' list, using flexible matching.
     """
     sections = submission_data.get("sections", [])
     matching_sections = []
     for section in sections:
-        if code in section.get("legislation_codes", []):
+        leg_codes = section.get("legislation_codes", [])
+        if any(codes_match(code, lc) for lc in leg_codes):
             matching_sections.append(section["section_number"])
     return matching_sections
 
@@ -117,6 +120,8 @@ class Issue(BaseModel):
     main_code: str | None = None
     # NEW: List of section numbers in the submitted document where this code/issue appears
     submission_sections: list[str] = []
+    # NEW: Severity level of the issue
+    severity: str = "info"
 
 
 class IssueList(BaseModel):
@@ -135,7 +140,7 @@ def call_openai_for_issues(code, legislation_markdown, submission_text):
     client = OpenAI()
     
     completion = client.beta.chat.completions.parse(
-        model="gpt-5-mini",
+        model="gpt-5-nano",
         messages=[
             {
                 "role": "system",
