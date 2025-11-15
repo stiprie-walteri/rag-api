@@ -30,6 +30,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 COPY parse_legislation_codes.py .
 COPY pdf_to_markdown.py .
+COPY full_response.js .
+
+# Copy legislation and utility files
+COPY legislation_util/ /app/legislation_util/
+COPY get_submission_chunks.py .
 
 # Change ownership to non-root user
 RUN chown -R appuser:appuser /app
