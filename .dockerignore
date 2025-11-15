@@ -4,7 +4,8 @@
 
 # Documentation
 README.md
-*.md
+# Allow org_submission.md
+!org_submission.md
 
 # Python
 __pycache__
