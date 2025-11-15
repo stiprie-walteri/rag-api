@@ -131,19 +131,16 @@ def build_section_block(section, parent_prefix=""):
     return "\n".join(blocks).strip()
 
 
-def get_submission_by_codes(codes):
+def get_submission_by_codes(codes, data=None):
     """
     Given a list of legislation codes (e.g. ["145.A.30", "AMC 145.A.30"]),
     return a markdown string concatenating every section/subsection from
     parsed_legislation_codes.json that is relevant to ANY of those codes.
 
-    Logic:
-      - If a top-level section's legislation_codes match any code:
-            include the ENTIRE section subtree (its text + all subsections).
-      - If a top-level section does not match, but a nested subsection has
-        legislation_codes that match, include only that subsection subtree.
+    If data is provided, use it instead of loading from file.
     """
-    data = load_submission_json()
+    if data is None:
+        data = load_submission_json()
     sections = data.get("sections", []) or []
 
     matched_blocks = []

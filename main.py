@@ -135,7 +135,7 @@ async def parse_legislation(file: UploadFile = File(...)):
                     legislation_markdown = subsections_md
             
             # Get submission text
-            submission_text = get_submission_by_codes([code])
+            submission_text = get_submission_by_codes([code], parsed_codes)
             if not submission_text.strip():
                 continue
             
