@@ -271,6 +271,10 @@ class LegislationCodeParser:
                 all_codes = title_codes + legislation_codes
                 all_codes = list(dict.fromkeys(all_codes))  # Remove duplicates
                 
+                # Skip codes if section indicates no content
+                if section_text.strip().lower() in ["nil", "not applicable at this time", "n/a", "none", "not applicable"]:
+                    all_codes = []
+                
                 # Add to all found codes
                 all_found_codes.update(all_codes)
                 

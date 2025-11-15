@@ -47,6 +47,7 @@ Rules:
 - Prefer a few strong, well-explained issues over many minor ones.
 - "submission_excerpt" MUST be exact text copied from the submission (no paraphrase).
 - "legislation_source" MUST clearly identify the relevant part of the legislation (id plus text or a precise paraphrase).
+- Ignore any submission text that is a placeholder or non-descriptive (e.g., "Nil", "Not applicable", "N/A"). Only analyze substantive content.
 
 Legislation (Markdown):
 ---
@@ -140,7 +141,12 @@ def call_openai_for_issues(code, legislation_markdown, submission_text):
                 "role": "system",
                 "content": (
                     "You are a strict, detail-oriented compliance analyst "
-                    "for aviation maintenance regulation (EASA Part-145). "
+                    "specializing in EASA Part-145 aviation maintenance regulations. "
+                    "Your role is to identify specific non-compliance, ambiguities, or risks in submitted maintenance procedures compared to EASA requirements. "
+                    "Ignore any submission text that consists of placeholders, generic statements, or non-descriptive phrases like 'Nil', 'Not applicable', 'N/A', 'TBD', or similar. "
+                    "Only analyze substantive, detailed content that directly relates to the specified legislation code. "
+                    "If the submission provides no relevant details for the code, return an empty issues list. "
+                    "Focus on concrete gaps, conflicts, or ambiguities that could impact safety or regulatory compliance. "
                     "Always respond with valid JSON matching the given schema."
                 ),
             },
