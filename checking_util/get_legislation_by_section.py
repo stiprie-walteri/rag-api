@@ -6,7 +6,7 @@ from pathlib import Path
 
 # Hard-coded inputs. Change these as needed.
 LEGISLATION_FILE = "legislation.json"
-QUERY_CODE = "AMC2 145.A.15"  # e.g. "145.A.10", "AMC 145.A.10", "145.A.25(c)"
+QUERY_CODE = "AMC 145.A.25(d)"  # e.g. "145.A.10", "AMC 145.A.10", "145.A.25(c)"
 
 
 def normalize_code(s):
@@ -72,7 +72,7 @@ def format_token(raw_id):
     return f"({value})"
 
 
-def gather_paths_from_node(node, root_label, ancestor_tokens, paths):
+def gather_paths_from_node(node, root_label, ancestor_tokens, paths, path_to_node):
     """
     Recursively collect fully-qualified subsection paths from this node.
 
@@ -93,10 +93,12 @@ def gather_paths_from_node(node, root_label, ancestor_tokens, paths):
             tokens = ancestor_tokens + [token]
             path = root_label + "".join(" " + t for t in tokens)
             paths.append(path)
-            gather_paths_from_node(child, root_label, tokens, paths)
+            # index this path -> node
+            path_to_node[path] = child
+            gather_paths_from_node(child, root_label, tokens, paths, path_to_node)
         else:
             # No id at this level; still recurse for any deeper ids
-            gather_paths_from_node(child, root_label, ancestor_tokens, paths)
+            gather_paths_from_node(child, root_label, ancestor_tokens, paths, path_to_node)
 
 
 def unique_preserve_order(items):
@@ -119,6 +121,7 @@ def load_legislation():
       - base_to_all_paths: base_id -> list of all subsection paths
       - id_to_paths: exact id -> list of subsection paths for that node only
       - all_paths: list of all subsection paths (for subsection-prefix queries)
+      - path_to_node: path string -> node dict
     """
     path = Path(LEGISLATION_FILE)
     with path.open("r", encoding="utf-8") as f:
@@ -134,6 +137,7 @@ def load_legislation():
     id_to_node = {}
     base_groups = {}
     base_order = []
+    path_to_node = {}
 
     # Group by base id and index by exact id
     for node in nodes:
@@ -157,7 +161,7 @@ def load_legislation():
     id_to_paths = {}
     all_paths = []
 
-    # Build paths
+    # Build paths and path_to_node
     for base_id in base_order:
         group_nodes = base_groups[base_id]
         base_paths = []
@@ -174,17 +178,19 @@ def load_legislation():
             else:
                 root_label = parsed_base_id
 
-            # Path for node itself, if it has inline tokens in its own id
             node_paths = []
 
+            # Path for node itself, if it has inline tokens in its own id
             if inline_tokens:
                 self_path = root_label + "".join(" " + t for t in inline_tokens)
                 base_paths.append(self_path)
                 node_paths.append(self_path)
+                # index self path as well
+                path_to_node[self_path] = node
 
-            # Now recurse into children, starting from inline tokens as ancestors
-            gather_paths_from_node(node, root_label, inline_tokens, base_paths)
-            gather_paths_from_node(node, root_label, inline_tokens, node_paths)
+            # Recurse into children, starting from inline tokens as ancestors
+            gather_paths_from_node(node, root_label, inline_tokens, base_paths, path_to_node)
+            gather_paths_from_node(node, root_label, inline_tokens, node_paths, path_to_node)
 
             # Store per-id paths
             id_to_paths[sec_id] = unique_preserve_order(node_paths)
@@ -202,7 +208,51 @@ def load_legislation():
         "base_to_all_paths": base_to_all_paths,
         "id_to_paths": id_to_paths,
         "all_paths": all_paths,
+        "path_to_node": path_to_node,
     }
+
+
+def node_to_markdown(heading_id, node):
+    """
+    Build markdown for a single node:
+
+    # <heading_id>
+
+    <title>
+
+    <text>
+    """
+    if node is None:
+        return ""
+
+    parts = []
+    parts.append(f"# {heading_id}")
+
+    title = node.get("title")
+    if title:
+        parts.append("")
+        parts.append(str(title))
+
+    text = node.get("text")
+    if text:
+        parts.append("")
+        parts.append(str(text))
+
+    return "\n".join(parts)
+
+
+def build_subsections_markdown(paths, path_to_node):
+    """
+    Build a combined markdown string for a list of subsection paths.
+    Each subsection gets its own H1 heading using the full path as id.
+    """
+    blocks = []
+    for path in paths:
+        node = path_to_node.get(path)
+        if not node:
+            continue
+        blocks.append(node_to_markdown(path, node))
+    return "\n\n\n".join(blocks)
 
 
 def get_subsections_for_code(code, leg):
@@ -210,7 +260,9 @@ def get_subsections_for_code(code, leg):
     Given any code, return:
       {
         "id": "<input_code>",
-        "subsections": [ ... ]
+        "subsections": [ ... ],                  # list of subsection path codes
+        "main_section": "<markdown string>",     # main section in markdown
+        "subsections_markdown": "<markdown string for all subsections>"
       }
 
     Rules:
@@ -225,45 +277,69 @@ def get_subsections_for_code(code, leg):
     base_to_all_paths = leg["base_to_all_paths"]
     id_to_paths = leg["id_to_paths"]
     all_paths = leg["all_paths"]
+    path_to_node = leg["path_to_node"]
+    id_to_node = leg["id_to_node"]
 
     norm_code = normalize_code(code)
     prefix_q, base_q, inline_tokens_q = parse_section_id(code)
 
+    subsections_paths = []
+    main_node = None
+
     # 1) If the code includes parentheses -> treat as a subsection path.
     if inline_tokens_q:
-        out = []
+        # subsections below this code
         for path in all_paths:
-            if normalize_code(path).startswith(norm_code) and len(normalize_code(path)) > len(norm_code):
-                out.append(path)
-        return {
-            "id": code,
-            "subsections": out,
-        }
+            npath = normalize_code(path)
+            if npath.startswith(norm_code) and len(npath) > len(norm_code):
+                subsections_paths.append(path)
 
-    # 2) No parentheses: either main base code or AMC/GM top-level.
+        # main section for this specific subsection code
+        main_path = None
+        for path in all_paths:
+            if normalize_code(path) == norm_code:
+                main_path = path
+                break
+        if main_path and main_path in path_to_node:
+            main_node = path_to_node[main_path]
+        else:
+            # fallback: try direct id match
+            main_node = id_to_node.get(code)
 
-    # Try AMC/GM exact match first.
-    for sec_id, paths in id_to_paths.items():
-        if normalize_code(sec_id) == norm_code:
-            # If it's AMC/GM (has prefix), return only its own paths.
-            pre, _, _ = parse_section_id(sec_id)
-            if pre:
-                return {
-                    "id": code,
-                    "subsections": paths,
-                }
+    else:
+        # 2) No parentheses: either AMC/GM top-level or main/base code.
 
-    # Main/base code: return everything for that base, including AMC/GM
-    if base_q in base_to_all_paths:
-        return {
-            "id": code,
-            "subsections": base_to_all_paths[base_q],
-        }
+        # Try AMC/GM exact match first.
+        for sec_id, paths in id_to_paths.items():
+            if normalize_code(sec_id) == norm_code:
+                pre, _, _ = parse_section_id(sec_id)
+                if pre:
+                    # AMC/GM node
+                    subsections_paths = paths
+                    main_node = id_to_node.get(sec_id)
+                    break
 
-    # Fallback: no match
+        # If not AMC/GM, treat as main/base code.
+        if main_node is None:
+            if base_q in base_to_all_paths:
+                subsections_paths = base_to_all_paths[base_q]
+                # Try to find main node: exact code first, then base id
+                if code in id_to_node:
+                    main_node = id_to_node[code]
+                elif base_q in id_to_node:
+                    main_node = id_to_node[base_q]
+            else:
+                subsections_paths = []
+                main_node = id_to_node.get(code)
+
+    main_section_md = node_to_markdown(code, main_node)
+    subsections_md = build_subsections_markdown(subsections_paths, path_to_node)
+
     return {
         "id": code,
-        "subsections": [],
+        "subsections": subsections_paths,
+        "main_section": main_section_md,
+        "subsections_markdown": subsections_md,
     }
 
 
