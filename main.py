@@ -71,16 +71,8 @@ async def health_check():
 @app.post("/api/parse-legislation", response_model=ParseResponse)
 async def parse_legislation(file: UploadFile = File(...)):
     """
-    Upload a PDF file, run the full pipeline (PDF -> Markdown -> Parsed Codes -> Issues), and return all outputs.
-    If MOCK_RESPONSE=true, return mock data immediately.
+    Upload a PDF file, run the full pipeline (PDF -> Markdown -> Parsed Codes -> Metrics -> Issues), and return all outputs.
     """
-    # Check for mock response
-    if os.getenv("MOCK_RESPONSE", "false").lower() == "true":
-        if mock_response:
-            return ParseResponse(**mock_response)
-        else:
-            print("Warning: MOCK_RESPONSE=true but mock file not loaded; proceeding with real pipeline.")
-    
     if not file.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
     
@@ -179,6 +171,16 @@ async def parse_legislation(file: UploadFile = File(...)):
             if path and os.path.exists(path):
                 os.unlink(path)
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
+
+@app.get("/api/parse-legislation-mock", response_model=ParseResponse)
+async def parse_legislation_mock():
+    """
+    Return mock data for testing purposes.
+    """
+    if mock_response:
+        return ParseResponse(**mock_response)
+    else:
+        raise HTTPException(status_code=404, detail="Mock response not available")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
