@@ -135,7 +135,7 @@ def call_openai_for_issues(code, legislation_markdown, submission_text):
     client = OpenAI()
     
     completion = client.beta.chat.completions.parse(
-        model="gpt-4o-mini",
+        model="gpt-5-mini",
         messages=[
             {
                 "role": "system",
