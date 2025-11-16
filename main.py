@@ -1,10 +1,11 @@
 import tempfile
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 import json
 import os
+import uuid
 from pathlib import Path
 from dotenv import load_dotenv
 from parse_legislation_codes import LegislationCodeParser
@@ -28,6 +29,9 @@ if MOCK_RESPONSE_FILE.exists():
             mock_response = json.load(f)
     except Exception as e:
         print(f"Warning: Failed to load mock response from {MOCK_RESPONSE_FILE}: {e}")
+
+# In-memory job storage
+jobs = {}
 
 # Create FastAPI instance
 app = FastAPI(
@@ -57,24 +61,22 @@ class ParseResponse(BaseModel):
     metrics: dict
     issues: dict
 
-@app.get("/api/healthz", response_model=HealthResponse)
-async def health_check():
-    """
-    Health check endpoint
-    Returns the health status of the API
-    """
-    return HealthResponse(
-        status="healthy",
-        message="API is running successfully"
-    )
+# Response model for parse-legislation (job initiation)
+class JobResponse(BaseModel):
+    job_id: str
+    status: str
 
-@app.post("/api/parse-legislation", response_model=ParseResponse)
-async def parse_legislation(file: UploadFile = File(...)):
+# Response model for parse-legislation status
+class JobStatusResponse(BaseModel):
+    job_id: str
+    status: str
+    result: ParseResponse | None = None
+
+def process_legislation(job_id: str, file_content: bytes):
     """
-    Upload a PDF file, run the full pipeline (PDF -> Markdown -> Parsed Codes -> Metrics -> Issues), and return all outputs.
+    Background task to process the PDF and store results.
     """
-    if not file.filename.lower().endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+    jobs[job_id]["status"] = "processing"
     
     temp_pdf_path = None
     temp_md_path = None
@@ -84,7 +86,7 @@ async def parse_legislation(file: UploadFile = File(...)):
         # Step 1: Create temporary files
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_pdf:
             temp_pdf_path = temp_pdf.name
-            temp_pdf.write(await file.read())
+            temp_pdf.write(file_content)
         
         temp_md_path = temp_pdf_path.replace('.pdf', '.md')
         
@@ -152,25 +154,74 @@ async def parse_legislation(file: UploadFile = File(...)):
         
         issues_output = {"issues": all_issues}
         
-        # Step 6: Clean up temp files
-        for path in [temp_pdf_path, temp_md_path, temp_parsed_path]:
-            if path and os.path.exists(path):
-                os.unlink(path)
-        
-        # Return all outputs
-        return ParseResponse(
+        # Store result
+        result_data = ParseResponse(
             markdown=full_markdown,
             parsed_codes=parsed_codes,
             metrics=metrics,
             issues=issues_output
         )
+        jobs[job_id]["status"] = "completed"
+        jobs[job_id]["result"] = result_data
     
     except Exception as e:
-        # Clean up on error
+        jobs[job_id]["status"] = "failed"
+        jobs[job_id]["error"] = str(e)
+    
+    finally:
+        # Clean up temp files
         for path in [temp_pdf_path, temp_md_path, temp_parsed_path]:
             if path and os.path.exists(path):
                 os.unlink(path)
-        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
+
+@app.get("/api/healthz", response_model=HealthResponse)
+async def health_check():
+    """
+    Health check endpoint
+    Returns the health status of the API
+    """
+    return HealthResponse(
+        status="healthy",
+        message="API is running successfully"
+    )
+
+@app.post("/api/parse-legislation", response_model=JobResponse)
+async def parse_legislation(file: UploadFile = File(...), background_tasks: BackgroundTasks = BackgroundTasks()):
+    """
+    Upload a PDF file, start background processing, and return a job ID.
+    """
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+    
+    # Read file content
+    file_content = await file.read()
+    
+    # Generate job ID
+    job_id = str(uuid.uuid4())
+    
+    # Initialize job
+    jobs[job_id] = {"status": "pending", "result": None, "error": None}
+    
+    # Start background task
+    background_tasks.add_task(process_legislation, job_id, file_content)
+    
+    return JobResponse(job_id=job_id, status="pending")
+
+@app.get("/api/parse-legislation-status/{job_id}", response_model=JobStatusResponse)
+async def parse_legislation_status(job_id: str):
+    """
+    Check the status of a legislation parsing job.
+    """
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    job = jobs[job_id]
+    if job["status"] == "completed":
+        return JobStatusResponse(job_id=job_id, status="completed", result=job["result"])
+    elif job["status"] == "failed":
+        raise HTTPException(status_code=500, detail=f"Job failed: {job['error']}")
+    else:
+        return JobStatusResponse(job_id=job_id, status=job["status"])
 
 @app.get("/api/parse-legislation-mock", response_model=ParseResponse)
 async def parse_legislation_mock():
