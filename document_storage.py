@@ -207,6 +207,7 @@ class DocumentStorageService:
             response.close()
             response.release_conn()
 
+<<<<<<< Updated upstream
     def _ensure_user(
         self,
         cur: psycopg.Cursor[Any],
@@ -216,6 +217,9 @@ class DocumentStorageService:
         first_name: str | None = None,
         last_name: str | None = None,
     ) -> None:
+=======
+    def _ensure_organization_exists(self, cur: psycopg.Cursor[Any], organization_id: str) -> None:
+>>>>>>> Stashed changes
         cur.execute(
             """
             INSERT INTO users (
@@ -436,11 +440,11 @@ class DocumentStorageService:
         self,
         cur: psycopg.Cursor[Any],
         *,
-        organization_id: uuid.UUID,
+        organization_id: str,
         actor_user_id: str,
         action: str,
         object_type: str,
-        object_id: uuid.UUID,
+        object_id: str,
         metadata: dict[str, Any] | None = None,
     ) -> None:
         cur.execute(
@@ -469,8 +473,8 @@ class DocumentStorageService:
     def _get_document_for_org(
         self,
         cur: psycopg.Cursor[Any],
-        organization_id: uuid.UUID,
-        document_id: uuid.UUID,
+        organization_id: str,
+        document_id: str,
         *,
         for_update: bool = False,
     ) -> dict[str, Any] | None:
@@ -497,8 +501,8 @@ class DocumentStorageService:
         self,
         cur: psycopg.Cursor[Any],
         *,
-        organization_id: uuid.UUID,
-        document_id: uuid.UUID,
+        organization_id: str,
+        document_id: str,
         for_update: bool = False,
     ) -> dict[str, Any]:
         row = self._get_document_for_org(
@@ -727,10 +731,10 @@ class DocumentStorageService:
     def create_version(
         self,
         *,
-        organization_id: uuid.UUID,
+        organization_id: str,
         actor_user_id: str,
         markdown_bytes: bytes,
-        document_id: uuid.UUID | None = None,
+        document_id: str | None = None,
         title: str | None = None,
         message: str | None = None,
     ) -> dict[str, Any]:
@@ -753,7 +757,7 @@ class DocumentStorageService:
                     )
 
                     if document_id is None:
-                        document_id = uuid.uuid4()
+                        document_id = str(uuid.uuid4())
                         parent_version_id = None
                         version_no = 1
                         cur.execute(
@@ -821,7 +825,7 @@ class DocumentStorageService:
                                 (title, document_id, organization_id),
                             )
 
-                    version_id = uuid.uuid4()
+                    version_id = str(uuid.uuid4())
                     cur.execute(
                         """
                         INSERT INTO document_versions (
@@ -865,8 +869,8 @@ class DocumentStorageService:
                     )
 
                     audit_metadata = {
-                        "document_id": str(document_id),
-                        "version_id": str(version_id),
+                        "document_id": document_id,
+                        "version_id": version_id,
                         "version_no": version_no,
                         "content_hash": content_hash,
                         "size_bytes": size_bytes,
@@ -913,6 +917,7 @@ class DocumentStorageService:
             "size_bytes": size_bytes,
         }
 
+<<<<<<< Updated upstream
     def list_documents(
         self,
         *,
@@ -921,6 +926,9 @@ class DocumentStorageService:
         limit: int,
         offset: int,
     ) -> list[dict[str, Any]]:
+=======
+    def list_documents(self, *, organization_id: str, limit: int, offset: int) -> list[dict[str, Any]]:
+>>>>>>> Stashed changes
         with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
             with conn.cursor() as cur:
                 organization_role = self._ensure_user_in_organization(
@@ -1005,8 +1013,8 @@ class DocumentStorageService:
         self,
         cur: psycopg.Cursor[Any],
         *,
-        organization_id: uuid.UUID,
-        document_id: uuid.UUID,
+        organization_id: str,
+        document_id: str,
         version_no: int,
     ) -> dict[str, Any] | None:
         cur.execute(
@@ -1036,9 +1044,9 @@ class DocumentStorageService:
         self,
         cur: psycopg.Cursor[Any],
         *,
-        organization_id: uuid.UUID,
-        document_id: uuid.UUID,
-        version_id: uuid.UUID,
+        organization_id: str,
+        document_id: str,
+        version_id: str,
     ) -> dict[str, Any] | None:
         cur.execute(
             """
@@ -1066,9 +1074,15 @@ class DocumentStorageService:
     def _write_read_audit_if_requested(
         self,
         *,
+<<<<<<< Updated upstream
         organization_id: uuid.UUID,
         actor_user_id: str,
         document_id: uuid.UUID,
+=======
+        organization_id: str,
+        actor_user_id: str | None,
+        document_id: str,
+>>>>>>> Stashed changes
         metadata: dict[str, Any],
     ) -> None:
         with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
@@ -1087,9 +1101,15 @@ class DocumentStorageService:
     def get_document_current(
         self,
         *,
+<<<<<<< Updated upstream
         organization_id: uuid.UUID,
         document_id: uuid.UUID,
         actor_user_id: str,
+=======
+        organization_id: str,
+        document_id: str,
+        actor_user_id: str | None = None,
+>>>>>>> Stashed changes
     ) -> dict[str, Any]:
         with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
             with conn.cursor() as cur:
@@ -1123,8 +1143,8 @@ class DocumentStorageService:
             actor_user_id=actor_user_id,
             document_id=document_id,
             metadata={
-                "document_id": str(document_id),
-                "version_id": str(version["version_id"]),
+                "document_id": document_id,
+                "version_id": version["version_id"],
                 "version_no": version["version_no"],
                 "content_hash": version["content_hash"],
                 "size_bytes": version["size_bytes"],
@@ -1140,8 +1160,8 @@ class DocumentStorageService:
     def get_document_version(
         self,
         *,
-        organization_id: uuid.UUID,
-        document_id: uuid.UUID,
+        organization_id: str,
+        document_id: str,
         version_no: int,
         actor_user_id: str,
     ) -> dict[str, Any]:
@@ -1173,8 +1193,8 @@ class DocumentStorageService:
             actor_user_id=actor_user_id,
             document_id=document_id,
             metadata={
-                "document_id": str(document_id),
-                "version_id": str(version["version_id"]),
+                "document_id": document_id,
+                "version_id": version["version_id"],
                 "version_no": version["version_no"],
                 "content_hash": version["content_hash"],
                 "size_bytes": version["size_bytes"],
@@ -1190,9 +1210,14 @@ class DocumentStorageService:
     def list_versions(
         self,
         *,
+<<<<<<< Updated upstream
         organization_id: uuid.UUID,
         document_id: uuid.UUID,
         actor_user_id: str,
+=======
+        organization_id: str,
+        document_id: str,
+>>>>>>> Stashed changes
         limit: int,
         offset: int,
     ) -> list[dict[str, Any]]:

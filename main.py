@@ -98,9 +98,9 @@ class UploadDocumentResponse(BaseModel):
 
 
 class DocumentVersionMetadata(BaseModel):
-    version_id: uuid.UUID
-    organization_id: uuid.UUID
-    document_id: uuid.UUID
+    version_id: str
+    organization_id: str
+    document_id: str
     version_no: int
     content_hash: str
     object_key: str
@@ -108,12 +108,12 @@ class DocumentVersionMetadata(BaseModel):
     created_at: datetime
     created_by: str
     message: str | None = None
-    parent_version_id: uuid.UUID | None = None
+    parent_version_id: str | None = None
 
 
 class DocumentMetadata(BaseModel):
-    document_id: uuid.UUID
-    organization_id: uuid.UUID
+    document_id: str
+    organization_id: str
     title: str | None = None
     created_at: datetime
     created_by: str
@@ -139,8 +139,8 @@ class DocumentContentResponse(BaseModel):
 
 
 class DocumentVersionsResponse(BaseModel):
-    organization_id: uuid.UUID
-    document_id: uuid.UUID
+    organization_id: str
+    document_id: str
     items: list[DocumentVersionMetadata]
     limit: int
     offset: int
@@ -160,7 +160,7 @@ class MeResponse(BaseModel):
     user_id: str
     clerk_org_id: str | None = None
     clerk_org_slug: str | None = None
-    organization_id: uuid.UUID | None = None
+    organization_id: str | None = None
     organization_role: str | None = None
     email: str | None = None
     first_name: str | None = None
@@ -187,7 +187,7 @@ def _sync_authenticated_org(
     service: DocumentStorageService,
     auth: AuthContext,
     *,
-    requested_organization_id: uuid.UUID | None = None,
+    requested_organization_id: str | None = None,
     create_if_missing: bool,
 ) -> dict:
     try:
@@ -450,7 +450,7 @@ async def upload_document(
 @app.get("/orgs/{organization_id}/documents", response_model=DocumentListResponse)
 @app.get("/api/orgs/{organization_id}/documents", response_model=DocumentListResponse)
 async def list_documents(
-    organization_id: uuid.UUID,
+    organization_id: str,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     auth: AuthContext = Depends(get_auth_context),
@@ -518,8 +518,8 @@ async def get_document_current(
     response_model=DocumentContentResponse,
 )
 async def get_document_version(
-    organization_id: uuid.UUID,
-    document_id: uuid.UUID,
+    organization_id: str,
+    document_id: str,
     version_no: int,
     auth: AuthContext = Depends(get_auth_context),
 ):
@@ -559,8 +559,8 @@ async def get_document_version(
 @app.get("/orgs/{organization_id}/documents/{document_id}/versions", response_model=DocumentVersionsResponse)
 @app.get("/api/orgs/{organization_id}/documents/{document_id}/versions", response_model=DocumentVersionsResponse)
 async def list_document_versions(
-    organization_id: uuid.UUID,
-    document_id: uuid.UUID,
+    organization_id: str,
+    document_id: str,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     auth: AuthContext = Depends(get_auth_context),
