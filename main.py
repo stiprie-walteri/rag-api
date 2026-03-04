@@ -90,9 +90,9 @@ class JobStatusResponse(BaseModel):
 
 
 class UploadDocumentResponse(BaseModel):
-    organization_id: uuid.UUID
-    document_id: uuid.UUID
-    version_id: uuid.UUID
+    organization_id: str
+    document_id: str
+    version_id: str
     version_no: int
     content_hash: str
 
@@ -397,9 +397,9 @@ async def parse_legislation_mock():
 @app.post("/documents/upload", response_model=UploadDocumentResponse)
 @app.post("/api/documents/upload", response_model=UploadDocumentResponse)
 async def upload_document(
+    organization_id: str = Form(...),
     file: UploadFile = File(...),
-    organization_id: uuid.UUID | None = Form(default=None),
-    document_id: uuid.UUID | None = Form(default=None),
+    document_id: str | None = Form(default=None),
     title: str | None = Form(default=None),
     message: str | None = Form(default=None),
     auth: AuthContext = Depends(get_auth_context),
@@ -479,8 +479,8 @@ async def list_documents(
 @app.get("/orgs/{organization_id}/documents/{document_id}", response_model=DocumentContentResponse)
 @app.get("/api/orgs/{organization_id}/documents/{document_id}", response_model=DocumentContentResponse)
 async def get_document_current(
-    organization_id: uuid.UUID,
-    document_id: uuid.UUID,
+    organization_id: str,
+    document_id: str,
     auth: AuthContext = Depends(get_auth_context),
 ):
     service = _require_docstore()

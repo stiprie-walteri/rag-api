@@ -207,7 +207,6 @@ class DocumentStorageService:
             response.close()
             response.release_conn()
 
-<<<<<<< Updated upstream
     def _ensure_user(
         self,
         cur: psycopg.Cursor[Any],
@@ -217,9 +216,6 @@ class DocumentStorageService:
         first_name: str | None = None,
         last_name: str | None = None,
     ) -> None:
-=======
-    def _ensure_organization_exists(self, cur: psycopg.Cursor[Any], organization_id: str) -> None:
->>>>>>> Stashed changes
         cur.execute(
             """
             INSERT INTO users (
@@ -917,7 +913,6 @@ class DocumentStorageService:
             "size_bytes": size_bytes,
         }
 
-<<<<<<< Updated upstream
     def list_documents(
         self,
         *,
@@ -926,9 +921,6 @@ class DocumentStorageService:
         limit: int,
         offset: int,
     ) -> list[dict[str, Any]]:
-=======
-    def list_documents(self, *, organization_id: str, limit: int, offset: int) -> list[dict[str, Any]]:
->>>>>>> Stashed changes
         with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
             with conn.cursor() as cur:
                 organization_role = self._ensure_user_in_organization(
@@ -1074,15 +1066,9 @@ class DocumentStorageService:
     def _write_read_audit_if_requested(
         self,
         *,
-<<<<<<< Updated upstream
-        organization_id: uuid.UUID,
-        actor_user_id: str,
-        document_id: uuid.UUID,
-=======
         organization_id: str,
         actor_user_id: str | None,
         document_id: str,
->>>>>>> Stashed changes
         metadata: dict[str, Any],
     ) -> None:
         with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
@@ -1101,15 +1087,9 @@ class DocumentStorageService:
     def get_document_current(
         self,
         *,
-<<<<<<< Updated upstream
-        organization_id: uuid.UUID,
-        document_id: uuid.UUID,
-        actor_user_id: str,
-=======
         organization_id: str,
         document_id: str,
         actor_user_id: str | None = None,
->>>>>>> Stashed changes
     ) -> dict[str, Any]:
         with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
             with conn.cursor() as cur:
@@ -1210,14 +1190,8 @@ class DocumentStorageService:
     def list_versions(
         self,
         *,
-<<<<<<< Updated upstream
-        organization_id: uuid.UUID,
-        document_id: uuid.UUID,
-        actor_user_id: str,
-=======
         organization_id: str,
         document_id: str,
->>>>>>> Stashed changes
         limit: int,
         offset: int,
     ) -> list[dict[str, Any]]:
