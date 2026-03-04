@@ -1,132 +1,256 @@
+import json
+import logging
+import os
 import tempfile
-from fastapi import FastAPI, File, HTTPException, UploadFile, BackgroundTasks
+import uuid
+from datetime import datetime
+from pathlib import Path
+
+import uvicorn
+from dotenv import load_dotenv
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import uvicorn
-import json
-import os
-import uuid
-from pathlib import Path
-from dotenv import load_dotenv
+
+from compare_chunks import IssueList, call_openai_for_issues, find_sections_for_code, init_openai_from_env
+from document_storage import (
+    DocumentHasNoVersionsError,
+    DocumentNotFoundError,
+    DocumentStorageSettings,
+    DocumentStorageService,
+    DocumentVersionNotFoundError,
+    OrganizationMismatchError,
+)
+from get_submission_chunks import get_submission_by_codes
+from legislation_util.find_sections import compute_metrics, load_legislation_unique_sections, parse_submission_codes
+from legislation_util.get_legislation_by_section import get_subsections_for_code, load_legislation
 from parse_legislation_codes import LegislationCodeParser
 from pdf_to_markdown import convert_pdf_to_markdown
 
-# Import pipeline functions
-from legislation_util.find_sections import load_legislation_unique_sections, parse_submission_codes, compute_metrics
-from legislation_util.get_legislation_by_section import load_legislation, get_subsections_for_code
-from get_submission_chunks import get_submission_by_codes
-from compare_chunks import init_openai_from_env, call_openai_for_issues, IssueList, find_sections_for_code
 
-# Load environment variables
 load_dotenv()
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger(__name__)
 
-# Load mock response if available
+
 MOCK_RESPONSE_FILE = Path("full_response.json")
 mock_response = None
 if MOCK_RESPONSE_FILE.exists():
     try:
-        with open(MOCK_RESPONSE_FILE, 'r', encoding='utf-8') as f:
+        with open(MOCK_RESPONSE_FILE, "r", encoding="utf-8") as f:
             mock_response = json.load(f)
-    except Exception as e:
-        print(f"Warning: Failed to load mock response from {MOCK_RESPONSE_FILE}: {e}")
+    except Exception as exc:
+        logger.warning("Failed to load mock response from %s: %s", MOCK_RESPONSE_FILE, exc)
 
-# In-memory job storage
-jobs = {}
+jobs: dict[str, dict] = {}
 
-# Create FastAPI instance
+
 app = FastAPI(
     title="Python API Template",
     description="A simple Python API template with health check endpoint",
-    version="1.0.0"
+    version="1.0.0",
 )
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Response model for health check
+
 class HealthResponse(BaseModel):
     status: str
     message: str
 
-# Response model for parse-legislation
+
 class ParseResponse(BaseModel):
     markdown: str
     parsed_codes: dict
     metrics: dict
     issues: dict
 
-# Response model for parse-legislation (job initiation)
+
 class JobResponse(BaseModel):
     job_id: str
     status: str
 
-# Response model for parse-legislation status
+
 class JobStatusResponse(BaseModel):
     job_id: str
     status: str
     result: ParseResponse | None = None
 
+
+class UploadDocumentResponse(BaseModel):
+    document_id: uuid.UUID
+    version_id: uuid.UUID
+    version_no: int
+    content_hash: str
+
+
+class DocumentVersionMetadata(BaseModel):
+    version_id: uuid.UUID
+    organization_id: uuid.UUID
+    document_id: uuid.UUID
+    version_no: int
+    content_hash: str
+    object_key: str
+    size_bytes: int
+    created_at: datetime
+    created_by: str
+    message: str | None = None
+    parent_version_id: uuid.UUID | None = None
+
+
+class DocumentMetadata(BaseModel):
+    document_id: uuid.UUID
+    organization_id: uuid.UUID
+    title: str | None = None
+    created_at: datetime
+    created_by: str
+    updated_at: datetime
+
+
+class DocumentListItem(DocumentMetadata):
+    current_version: DocumentVersionMetadata | None = None
+
+
+class DocumentListResponse(BaseModel):
+    items: list[DocumentListItem]
+    limit: int
+    offset: int
+    next_offset: int | None = None
+
+
+class DocumentContentResponse(BaseModel):
+    document: DocumentMetadata
+    version: DocumentVersionMetadata
+    content_md: str
+
+
+class DocumentVersionsResponse(BaseModel):
+    organization_id: uuid.UUID
+    document_id: uuid.UUID
+    items: list[DocumentVersionMetadata]
+    limit: int
+    offset: int
+    next_offset: int | None = None
+
+
+class DocstoreGcResponse(BaseModel):
+    dry_run: bool
+    scanned_objects: int
+    referenced_objects: int
+    unreferenced_objects: int
+    candidate_keys: list[str]
+    deleted_keys: list[str]
+
+
+docstore_service: DocumentStorageService | None = None
+try:
+    docstore_service = DocumentStorageService(DocumentStorageSettings.from_env())
+except ValueError as exc:
+    logger.warning("Persistent document storage is disabled: %s", exc)
+
+
+def _require_docstore() -> DocumentStorageService:
+    if docstore_service is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Persistent document storage is not configured. Set POSTGRES_DSN and MinIO env vars.",
+        )
+    return docstore_service
+
+
+def _is_markdown_upload(file: UploadFile) -> bool:
+    filename = (file.filename or "").lower()
+    content_type = (file.content_type or "").lower()
+    return (
+        filename.endswith(".md")
+        or filename.endswith(".markdown")
+        or "markdown" in content_type
+        or content_type == "text/plain"
+    )
+
+
+def _to_version_metadata(raw: dict) -> DocumentVersionMetadata:
+    return DocumentVersionMetadata(**raw)
+
+
+def _to_document_metadata(raw: dict) -> DocumentMetadata:
+    return DocumentMetadata(
+        document_id=raw["document_id"],
+        organization_id=raw["organization_id"],
+        title=raw.get("title"),
+        created_at=raw["created_at"],
+        created_by=raw["created_by"],
+        updated_at=raw["updated_at"],
+    )
+
+
+def _to_document_list_item(raw: dict) -> DocumentListItem:
+    current_version = raw.get("current_version")
+    return DocumentListItem(
+        document_id=raw["document_id"],
+        organization_id=raw["organization_id"],
+        title=raw.get("title"),
+        created_at=raw["created_at"],
+        created_by=raw["created_by"],
+        updated_at=raw["updated_at"],
+        current_version=_to_version_metadata(current_version) if current_version else None,
+    )
+
+
+@app.on_event("startup")
+def initialize_docstore() -> None:
+    if docstore_service is None:
+        return
+    docstore_service.initialize()
+
+
 def process_legislation(job_id: str, file_content: bytes):
-    """
-    Background task to process the PDF and store results.
-    """
     jobs[job_id]["status"] = "processing"
-    
+
     temp_pdf_path = None
     temp_md_path = None
     temp_parsed_path = None
-    
+
     try:
-        # Step 1: Create temporary files
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_pdf:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
             temp_pdf_path = temp_pdf.name
             temp_pdf.write(file_content)
-        
-        temp_md_path = temp_pdf_path.replace('.pdf', '.md')
-        
-        # Step 2: Convert PDF to Markdown
+
+        temp_md_path = temp_pdf_path.replace(".pdf", ".md")
         convert_pdf_to_markdown(temp_pdf_path, temp_md_path)
-        
-        # Read the full Markdown content
-        with open(temp_md_path, 'r', encoding='utf-8') as f:
+
+        with open(temp_md_path, "r", encoding="utf-8") as f:
             full_markdown = f.read()
-        
-        # Step 3: Parse Markdown for legislation codes
+
         parser = LegislationCodeParser()
         parsed_codes = parser.parse_markdown(temp_md_path)
-        
-        # Step 4: Generate legislation comparison metrics
+
         legislation_path = Path("legislation_util/unique_sections_legislation.json")
         legislation_info = load_legislation_unique_sections(legislation_path)
-        
-        # Save parsed_codes to temp file for parse_submission_codes
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as temp_parsed:
+
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as temp_parsed:
             json.dump(parsed_codes, temp_parsed)
             temp_parsed_path = temp_parsed.name
-        
+
         submission_raw_codes, submission_norm_codes = parse_submission_codes(Path(temp_parsed_path))
         metrics = compute_metrics(legislation_info, submission_raw_codes, submission_norm_codes)
-        
-        # Step 5: Generate issues using compare_chunks logic
+
         init_openai_from_env()
-        
-        # Load legislation
         legislation = load_legislation(Path("legislation_util/legislation.json"))
-        
+
         all_main_codes_found = metrics.get("all_main_codes_found", [])
         all_issues = []
-        
+
         for code in all_main_codes_found:
             if not isinstance(code, str):
                 continue
-            
-            # Get legislation text
+
             leg_info = get_subsections_for_code(code, legislation)
             legislation_markdown = (leg_info.get("main_section") or "").strip()
             subsections_md = (leg_info.get("subsections_markdown") or "").strip()
@@ -135,103 +259,246 @@ def process_legislation(job_id: str, file_content: bytes):
                     legislation_markdown += "\n\n\n" + subsections_md
                 else:
                     legislation_markdown = subsections_md
-            
-            # Get submission text
+
             submission_text = get_submission_by_codes([code], parsed_codes)
             if not submission_text.strip():
                 continue
-            
-            # Call OpenAI for issues
+
             result: IssueList = call_openai_for_issues(code, legislation_markdown, submission_text)
-            
-            # Find sections
             submission_sections = find_sections_for_code(code, parsed_codes)
-            
+
             for issue in result.issues:
                 issue.main_code = issue.main_code or code
                 issue.submission_sections = submission_sections
                 all_issues.append(issue.model_dump())
-        
+
         issues_output = {"issues": all_issues}
-        
-        # Store result
+
         result_data = ParseResponse(
             markdown=full_markdown,
             parsed_codes=parsed_codes,
             metrics=metrics,
-            issues=issues_output
+            issues=issues_output,
         )
         jobs[job_id]["status"] = "completed"
         jobs[job_id]["result"] = result_data
-    
-    except Exception as e:
+
+    except Exception as exc:
         jobs[job_id]["status"] = "failed"
-        jobs[job_id]["error"] = str(e)
-    
+        jobs[job_id]["error"] = str(exc)
+
     finally:
-        # Clean up temp files
         for path in [temp_pdf_path, temp_md_path, temp_parsed_path]:
             if path and os.path.exists(path):
                 os.unlink(path)
 
+
 @app.get("/api/healthz", response_model=HealthResponse)
 async def health_check():
-    """
-    Health check endpoint
-    Returns the health status of the API
-    """
     return HealthResponse(
         status="healthy",
-        message="API is running successfully"
+        message="API is running successfully",
     )
+
 
 @app.post("/api/parse-legislation", response_model=JobResponse)
 async def parse_legislation(file: UploadFile = File(...), background_tasks: BackgroundTasks = BackgroundTasks()):
-    """
-    Upload a PDF file, start background processing, and return a job ID.
-    """
-    if not file.filename.lower().endswith('.pdf'):
+    if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
-    
-    # Read file content
+
     file_content = await file.read()
-    
-    # Generate job ID
     job_id = str(uuid.uuid4())
-    
-    # Initialize job
     jobs[job_id] = {"status": "pending", "result": None, "error": None}
-    
-    # Start background task
     background_tasks.add_task(process_legislation, job_id, file_content)
-    
     return JobResponse(job_id=job_id, status="pending")
+
 
 @app.get("/api/parse-legislation-status/{job_id}", response_model=JobStatusResponse)
 async def parse_legislation_status(job_id: str):
-    """
-    Check the status of a legislation parsing job.
-    """
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
-    
+
     job = jobs[job_id]
     if job["status"] == "completed":
         return JobStatusResponse(job_id=job_id, status="completed", result=job["result"])
-    elif job["status"] == "failed":
+    if job["status"] == "failed":
         raise HTTPException(status_code=500, detail=f"Job failed: {job['error']}")
-    else:
-        return JobStatusResponse(job_id=job_id, status=job["status"])
+    return JobStatusResponse(job_id=job_id, status=job["status"])
+
 
 @app.get("/api/parse-legislation-mock", response_model=ParseResponse)
 async def parse_legislation_mock():
-    """
-    Return mock data for testing purposes.
-    """
     if mock_response:
         return ParseResponse(**mock_response)
-    else:
-        raise HTTPException(status_code=404, detail="Mock response not available")
+    raise HTTPException(status_code=404, detail="Mock response not available")
+
+
+@app.post("/documents/upload", response_model=UploadDocumentResponse)
+@app.post("/api/documents/upload", response_model=UploadDocumentResponse)
+async def upload_document(
+    organization_id: uuid.UUID = Form(...),
+    actor_user_id: str = Form(...),
+    file: UploadFile = File(...),
+    document_id: uuid.UUID | None = Form(default=None),
+    title: str | None = Form(default=None),
+    message: str | None = Form(default=None),
+):
+    service = _require_docstore()
+    if not actor_user_id.strip():
+        raise HTTPException(status_code=400, detail="actor_user_id is required.")
+    if not _is_markdown_upload(file):
+        raise HTTPException(status_code=400, detail="Only Markdown files are accepted.")
+
+    markdown_bytes = await file.read()
+    if not markdown_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded Markdown file is empty.")
+
+    try:
+        result = service.create_version(
+            organization_id=organization_id,
+            actor_user_id=actor_user_id.strip(),
+            markdown_bytes=markdown_bytes,
+            document_id=document_id,
+            title=title,
+            message=message,
+        )
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OrganizationMismatchError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except DocumentVersionNotFoundError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return UploadDocumentResponse(
+        document_id=result["document_id"],
+        version_id=result["version_id"],
+        version_no=result["version_no"],
+        content_hash=result["content_hash"],
+    )
+
+
+@app.get("/orgs/{organization_id}/documents", response_model=DocumentListResponse)
+@app.get("/api/orgs/{organization_id}/documents", response_model=DocumentListResponse)
+async def list_documents(
+    organization_id: uuid.UUID,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    service = _require_docstore()
+    items_raw = service.list_documents(organization_id=organization_id, limit=limit, offset=offset)
+    items = [_to_document_list_item(item) for item in items_raw]
+    next_offset = offset + len(items) if len(items) == limit else None
+    return DocumentListResponse(items=items, limit=limit, offset=offset, next_offset=next_offset)
+
+
+@app.get("/orgs/{organization_id}/documents/{document_id}", response_model=DocumentContentResponse)
+@app.get("/api/orgs/{organization_id}/documents/{document_id}", response_model=DocumentContentResponse)
+async def get_document_current(
+    organization_id: uuid.UUID,
+    document_id: uuid.UUID,
+    actor_user_id: str | None = Query(default=None),
+):
+    service = _require_docstore()
+    try:
+        result = service.get_document_current(
+            organization_id=organization_id,
+            document_id=document_id,
+            actor_user_id=actor_user_id,
+        )
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OrganizationMismatchError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (DocumentHasNoVersionsError, DocumentVersionNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return DocumentContentResponse(
+        document=_to_document_metadata(result["document"]),
+        version=_to_version_metadata(result["version"]),
+        content_md=result["content_bytes"].decode("utf-8"),
+    )
+
+
+@app.get("/orgs/{organization_id}/documents/{document_id}/versions/{version_no}", response_model=DocumentContentResponse)
+@app.get(
+    "/api/orgs/{organization_id}/documents/{document_id}/versions/{version_no}",
+    response_model=DocumentContentResponse,
+)
+async def get_document_version(
+    organization_id: uuid.UUID,
+    document_id: uuid.UUID,
+    version_no: int,
+    actor_user_id: str | None = Query(default=None),
+):
+    if version_no <= 0:
+        raise HTTPException(status_code=400, detail="version_no must be greater than 0.")
+
+    service = _require_docstore()
+    try:
+        result = service.get_document_version(
+            organization_id=organization_id,
+            document_id=document_id,
+            version_no=version_no,
+            actor_user_id=actor_user_id,
+        )
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OrganizationMismatchError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except DocumentVersionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return DocumentContentResponse(
+        document=_to_document_metadata(result["document"]),
+        version=_to_version_metadata(result["version"]),
+        content_md=result["content_bytes"].decode("utf-8"),
+    )
+
+
+@app.get("/orgs/{organization_id}/documents/{document_id}/versions", response_model=DocumentVersionsResponse)
+@app.get("/api/orgs/{organization_id}/documents/{document_id}/versions", response_model=DocumentVersionsResponse)
+async def list_document_versions(
+    organization_id: uuid.UUID,
+    document_id: uuid.UUID,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    service = _require_docstore()
+    try:
+        items_raw = service.list_versions(
+            organization_id=organization_id,
+            document_id=document_id,
+            limit=limit,
+            offset=offset,
+        )
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OrganizationMismatchError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    items = [_to_version_metadata(item) for item in items_raw]
+    next_offset = offset + len(items) if len(items) == limit else None
+    return DocumentVersionsResponse(
+        organization_id=organization_id,
+        document_id=document_id,
+        items=items,
+        limit=limit,
+        offset=offset,
+        next_offset=next_offset,
+    )
+
+
+@app.post("/api/admin/docstore/gc", response_model=DocstoreGcResponse)
+async def run_docstore_gc(
+    dry_run: bool = Query(default=True),
+    max_delete: int = Query(default=100, ge=1, le=5000),
+):
+    service = _require_docstore()
+    result = service.gc_unreferenced_objects(dry_run=dry_run, max_delete=max_delete)
+    return DocstoreGcResponse(**result)
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
