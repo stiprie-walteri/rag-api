@@ -241,7 +241,7 @@ class DocumentStorageService:
     def _get_organization_by_id(
         self,
         cur: psycopg.Cursor[Any],
-        organization_id: uuid.UUID,
+        organization_id: str,
     ) -> dict[str, Any] | None:
         cur.execute(
             """
@@ -272,7 +272,7 @@ class DocumentStorageService:
         self,
         cur: psycopg.Cursor[Any],
         *,
-        organization_id: uuid.UUID,
+        organization_id: str,
         user_id: str,
         role: str,
         actor_user_id: str,
@@ -330,7 +330,7 @@ class DocumentStorageService:
         self,
         cur: psycopg.Cursor[Any],
         *,
-        organization_id: uuid.UUID,
+        organization_id: str,
         user_id: str,
     ) -> str | None:
         cur.execute(
@@ -349,7 +349,7 @@ class DocumentStorageService:
         self,
         cur: psycopg.Cursor[Any],
         *,
-        organization_id: uuid.UUID,
+        organization_id: str,
         user_id: str,
     ) -> str:
         role = self._get_organization_membership_role(cur, organization_id=organization_id, user_id=user_id)
@@ -363,8 +363,8 @@ class DocumentStorageService:
         self,
         cur: psycopg.Cursor[Any],
         *,
-        organization_id: uuid.UUID,
-        document_id: uuid.UUID,
+        organization_id: str,
+        document_id: str,
         user_id: str,
         role: str,
         actor_user_id: str,
@@ -395,8 +395,8 @@ class DocumentStorageService:
         self,
         cur: psycopg.Cursor[Any],
         *,
-        organization_id: uuid.UUID,
-        document_id: uuid.UUID,
+        organization_id: str,
+        document_id: str,
         user_id: str,
     ) -> str | None:
         cur.execute(
@@ -416,8 +416,8 @@ class DocumentStorageService:
         self,
         cur: psycopg.Cursor[Any],
         *,
-        organization_id: uuid.UUID,
-        document_id: uuid.UUID,
+        organization_id: str,
+        document_id: str,
     ) -> int:
         cur.execute(
             """
@@ -522,8 +522,8 @@ class DocumentStorageService:
         self,
         cur: psycopg.Cursor[Any],
         *,
-        organization_id: uuid.UUID,
-        document_id: uuid.UUID,
+        organization_id: str,
+        document_id: str,
         user_id: str,
         allowed_roles: set[str],
         for_update: bool = False,
@@ -535,8 +535,8 @@ class DocumentStorageService:
         )
         document_row = self._assert_document_in_org(
             cur,
-            organization_id=organization_id,
-            document_id=document_id,
+            organization_id=str(organization_id),
+            document_id=str(document_id),
             for_update=for_update,
         )
 
@@ -606,7 +606,7 @@ class DocumentStorageService:
         primary_email: str | None = None,
         first_name: str | None = None,
         last_name: str | None = None,
-        requested_organization_id: uuid.UUID | None = None,
+        requested_organization_id: str | None = None,
         create_if_missing: bool = True,
     ) -> dict[str, Any]:
         if not clerk_user_id:
@@ -680,7 +680,7 @@ class DocumentStorageService:
                             raise OrganizationNotFoundError(
                                 "No private workspace exists for the authenticated user."
                             )
-                        organization_id = uuid.uuid4()
+                        organization_id = str(uuid.uuid4())
                         cur.execute(
                             """
                             INSERT INTO organizations (
@@ -748,7 +748,7 @@ class DocumentStorageService:
                     self._ensure_user(cur, user_id=actor_user_id)
                     self._ensure_user_in_organization(
                         cur,
-                        organization_id=organization_id,
+                        organization_id=uuid.UUID(organization_id),
                         user_id=actor_user_id,
                     )
 
@@ -773,8 +773,8 @@ class DocumentStorageService:
                         )
                         self._upsert_document_membership(
                             cur,
-                            organization_id=organization_id,
-                            document_id=document_id,
+                            organization_id=uuid.UUID(organization_id),
+                            document_id=uuid.UUID(document_id),
                             user_id=actor_user_id,
                             role="owner",
                             actor_user_id=actor_user_id,
@@ -782,8 +782,8 @@ class DocumentStorageService:
                     else:
                         document_row, _ = self._assert_document_access(
                             cur,
-                            organization_id=organization_id,
-                            document_id=document_id,
+                            organization_id=uuid.UUID(organization_id),
+                            document_id=uuid.UUID(document_id),
                             user_id=actor_user_id,
                             allowed_roles=DOCUMENT_WRITE_ROLES,
                             for_update=True,
@@ -916,7 +916,7 @@ class DocumentStorageService:
     def list_documents(
         self,
         *,
-        organization_id: uuid.UUID,
+        organization_id: str,
         actor_user_id: str,
         limit: int,
         offset: int,
@@ -925,7 +925,7 @@ class DocumentStorageService:
             with conn.cursor() as cur:
                 organization_role = self._ensure_user_in_organization(
                     cur,
-                    organization_id=organization_id,
+                    organization_id=uuid.UUID(organization_id),
                     user_id=actor_user_id,
                 )
                 cur.execute(
@@ -1095,8 +1095,8 @@ class DocumentStorageService:
             with conn.cursor() as cur:
                 document_row, my_role = self._assert_document_access(
                     cur,
-                    organization_id=organization_id,
-                    document_id=document_id,
+                    organization_id=uuid.UUID(organization_id),
+                    document_id=uuid.UUID(document_id),
                     user_id=actor_user_id,
                     allowed_roles=DOCUMENT_READ_ROLES,
                 )
@@ -1149,8 +1149,8 @@ class DocumentStorageService:
             with conn.cursor() as cur:
                 document_row, my_role = self._assert_document_access(
                     cur,
-                    organization_id=organization_id,
-                    document_id=document_id,
+                    organization_id=uuid.UUID(organization_id),
+                    document_id=uuid.UUID(document_id),
                     user_id=actor_user_id,
                     allowed_roles=DOCUMENT_READ_ROLES,
                 )
@@ -1192,6 +1192,7 @@ class DocumentStorageService:
         *,
         organization_id: str,
         document_id: str,
+        actor_user_id: str,
         limit: int,
         offset: int,
     ) -> list[dict[str, Any]]:
@@ -1199,8 +1200,8 @@ class DocumentStorageService:
             with conn.cursor() as cur:
                 self._assert_document_access(
                     cur,
-                    organization_id=organization_id,
-                    document_id=document_id,
+                    organization_id=uuid.UUID(organization_id),
+                    document_id=uuid.UUID(document_id),
                     user_id=actor_user_id,
                     allowed_roles=DOCUMENT_READ_ROLES,
                 )
@@ -1234,8 +1235,8 @@ class DocumentStorageService:
     def list_document_members(
         self,
         *,
-        organization_id: uuid.UUID,
-        document_id: uuid.UUID,
+        organization_id: str,
+        document_id: str,
         actor_user_id: str,
     ) -> list[dict[str, Any]]:
         with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
@@ -1279,8 +1280,8 @@ class DocumentStorageService:
     def set_document_member_role(
         self,
         *,
-        organization_id: uuid.UUID,
-        document_id: uuid.UUID,
+        organization_id: str,
+        document_id: str,
         actor_user_id: str,
         target_user_id: str,
         role: str,
@@ -1363,8 +1364,8 @@ class DocumentStorageService:
     def remove_document_member(
         self,
         *,
-        organization_id: uuid.UUID,
-        document_id: uuid.UUID,
+        organization_id: str,
+        document_id: str,
         actor_user_id: str,
         target_user_id: str,
     ) -> None:
