@@ -8,7 +8,7 @@ from pathlib import Path
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -26,6 +26,7 @@ from legislation_util.find_sections import compute_metrics, load_legislation_uni
 from legislation_util.get_legislation_by_section import get_subsections_for_code, load_legislation
 from parse_legislation_codes import LegislationCodeParser
 from pdf_to_markdown import convert_pdf_to_markdown
+from clerk_auth import ClerkAuthMiddleware, get_current_user_id
 
 
 load_dotenv()
@@ -50,14 +51,17 @@ app = FastAPI(
     description="A simple Python API template with health check endpoint",
     version="1.0.0",
 )
-
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Allows all origins
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
 )
+
+# Add Clerk authentication middleware
+app.add_middleware(ClerkAuthMiddleware)
 
 
 class HealthResponse(BaseModel):
@@ -498,6 +502,15 @@ async def run_docstore_gc(
     service = _require_docstore()
     result = service.gc_unreferenced_objects(dry_run=dry_run, max_delete=max_delete)
     return DocstoreGcResponse(**result)
+
+
+@app.get("/api/me")
+async def me(request: Request, user_id: str = Depends(get_current_user_id)):
+    """
+    Sample protected endpoint.
+    Returns the authenticated Clerk user ID.
+    """
+    return {"user_id": user_id}
 
 
 if __name__ == "__main__":
