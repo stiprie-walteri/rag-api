@@ -535,8 +535,8 @@ class DocumentStorageService:
         )
         document_row = self._assert_document_in_org(
             cur,
-            organization_id=str(organization_id),
-            document_id=str(document_id),
+            organization_id=organization_id,
+            document_id=document_id,
             for_update=for_update,
         )
 
@@ -748,7 +748,7 @@ class DocumentStorageService:
                     self._ensure_user(cur, user_id=actor_user_id)
                     self._ensure_user_in_organization(
                         cur,
-                        organization_id=uuid.UUID(organization_id),
+                        organization_id=organization_id,
                         user_id=actor_user_id,
                     )
 
@@ -773,8 +773,8 @@ class DocumentStorageService:
                         )
                         self._upsert_document_membership(
                             cur,
-                            organization_id=uuid.UUID(organization_id),
-                            document_id=uuid.UUID(document_id),
+                            organization_id=organization_id,
+                            document_id=document_id,
                             user_id=actor_user_id,
                             role="owner",
                             actor_user_id=actor_user_id,
@@ -782,8 +782,8 @@ class DocumentStorageService:
                     else:
                         document_row, _ = self._assert_document_access(
                             cur,
-                            organization_id=uuid.UUID(organization_id),
-                            document_id=uuid.UUID(document_id),
+                            organization_id=organization_id,
+                            document_id=document_id,
                             user_id=actor_user_id,
                             allowed_roles=DOCUMENT_WRITE_ROLES,
                             for_update=True,
@@ -925,7 +925,7 @@ class DocumentStorageService:
             with conn.cursor() as cur:
                 organization_role = self._ensure_user_in_organization(
                     cur,
-                    organization_id=uuid.UUID(organization_id),
+                    organization_id=organization_id,
                     user_id=actor_user_id,
                 )
                 cur.execute(
@@ -1095,8 +1095,8 @@ class DocumentStorageService:
             with conn.cursor() as cur:
                 document_row, my_role = self._assert_document_access(
                     cur,
-                    organization_id=uuid.UUID(organization_id),
-                    document_id=uuid.UUID(document_id),
+                    organization_id=organization_id,
+                    document_id=document_id,
                     user_id=actor_user_id,
                     allowed_roles=DOCUMENT_READ_ROLES,
                 )
@@ -1149,8 +1149,8 @@ class DocumentStorageService:
             with conn.cursor() as cur:
                 document_row, my_role = self._assert_document_access(
                     cur,
-                    organization_id=uuid.UUID(organization_id),
-                    document_id=uuid.UUID(document_id),
+                    organization_id=organization_id,
+                    document_id=document_id,
                     user_id=actor_user_id,
                     allowed_roles=DOCUMENT_READ_ROLES,
                 )
@@ -1200,8 +1200,8 @@ class DocumentStorageService:
             with conn.cursor() as cur:
                 self._assert_document_access(
                     cur,
-                    organization_id=uuid.UUID(organization_id),
-                    document_id=uuid.UUID(document_id),
+                    organization_id=organization_id,
+                    document_id=document_id,
                     user_id=actor_user_id,
                     allowed_roles=DOCUMENT_READ_ROLES,
                 )

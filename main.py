@@ -397,7 +397,7 @@ async def parse_legislation_mock():
 @app.post("/documents/upload", response_model=UploadDocumentResponse)
 @app.post("/api/documents/upload", response_model=UploadDocumentResponse)
 async def upload_document(
-    organization_id: str = Form(...),
+    organization_id: str | None = Form(default=None),
     file: UploadFile = File(...),
     document_id: str | None = Form(default=None),
     title: str | None = Form(default=None),
