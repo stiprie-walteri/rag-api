@@ -7,5 +7,7 @@ pymupdf
 pymupdf4llm
 dotenv
 openai
+PyJWT[crypto]
+httpx
 psycopg[binary]==3.2.4
 minio==7.2.12
