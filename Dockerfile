@@ -33,6 +33,7 @@ COPY parse_legislation_codes.py .
 COPY pdf_to_markdown.py .
 COPY full_response.json .
 COPY compare_chunks.py .
+COPY clerk_auth.py .
 COPY migrations/ /app/migrations/
 
 # Copy legislation and utility files
