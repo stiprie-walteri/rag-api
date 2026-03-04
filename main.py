@@ -8,14 +8,16 @@ from pathlib import Path
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from compare_chunks import IssueList, call_openai_for_issues, find_sections_for_code, init_openai_from_env
 from document_storage import (
+    DocumentAccessDeniedError,
     DocumentHasNoVersionsError,
     DocumentNotFoundError,
+    OrganizationNotFoundError,
     DocumentStorageSettings,
     DocumentStorageService,
     DocumentVersionNotFoundError,
@@ -26,7 +28,7 @@ from legislation_util.find_sections import compute_metrics, load_legislation_uni
 from legislation_util.get_legislation_by_section import get_subsections_for_code, load_legislation
 from parse_legislation_codes import LegislationCodeParser
 from pdf_to_markdown import convert_pdf_to_markdown
-from clerk_auth import ClerkAuthMiddleware, get_current_user_id
+from clerk_auth import AuthContext, ClerkAuthMiddleware, get_auth_context
 
 
 load_dotenv()
@@ -88,6 +90,7 @@ class JobStatusResponse(BaseModel):
 
 
 class UploadDocumentResponse(BaseModel):
+    organization_id: uuid.UUID
     document_id: uuid.UUID
     version_id: uuid.UUID
     version_no: int
@@ -115,6 +118,7 @@ class DocumentMetadata(BaseModel):
     created_at: datetime
     created_by: str
     updated_at: datetime
+    my_role: str | None = None
 
 
 class DocumentListItem(DocumentMetadata):
@@ -152,6 +156,17 @@ class DocstoreGcResponse(BaseModel):
     deleted_keys: list[str]
 
 
+class MeResponse(BaseModel):
+    user_id: str
+    clerk_org_id: str | None = None
+    clerk_org_slug: str | None = None
+    organization_id: uuid.UUID | None = None
+    organization_role: str | None = None
+    email: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+
+
 docstore_service: DocumentStorageService | None = None
 try:
     docstore_service = DocumentStorageService(DocumentStorageSettings.from_env())
@@ -166,6 +181,46 @@ def _require_docstore() -> DocumentStorageService:
             detail="Persistent document storage is not configured. Set POSTGRES_DSN and MinIO env vars.",
         )
     return docstore_service
+
+
+def _sync_authenticated_org(
+    service: DocumentStorageService,
+    auth: AuthContext,
+    *,
+    requested_organization_id: uuid.UUID | None = None,
+    create_if_missing: bool,
+) -> dict:
+    try:
+        context = service.sync_authenticated_user(
+            clerk_user_id=auth.user_id,
+            clerk_org_id=auth.clerk_org_id,
+            clerk_org_slug=auth.clerk_org_slug,
+            clerk_org_role=auth.clerk_org_role,
+            primary_email=auth.email,
+            first_name=auth.first_name,
+            last_name=auth.last_name,
+            requested_organization_id=requested_organization_id,
+            create_if_missing=create_if_missing,
+        )
+    except OrganizationMismatchError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except OrganizationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except DocumentAccessDeniedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if requested_organization_id is not None and context["organization_id"] != requested_organization_id:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Requested organization {requested_organization_id} does not match the active "
+                f"private workspace {context['organization_id']}."
+            ),
+        )
+
+    return context
 
 
 def _is_markdown_upload(file: UploadFile) -> bool:
@@ -191,6 +246,7 @@ def _to_document_metadata(raw: dict) -> DocumentMetadata:
         created_at=raw["created_at"],
         created_by=raw["created_by"],
         updated_at=raw["updated_at"],
+        my_role=raw.get("my_role"),
     )
 
 
@@ -203,6 +259,7 @@ def _to_document_list_item(raw: dict) -> DocumentListItem:
         created_at=raw["created_at"],
         created_by=raw["created_by"],
         updated_at=raw["updated_at"],
+        my_role=raw.get("my_role"),
         current_version=_to_version_metadata(current_version) if current_version else None,
     )
 
@@ -340,16 +397,20 @@ async def parse_legislation_mock():
 @app.post("/documents/upload", response_model=UploadDocumentResponse)
 @app.post("/api/documents/upload", response_model=UploadDocumentResponse)
 async def upload_document(
-    organization_id: uuid.UUID = Form(...),
-    actor_user_id: str = Form(...),
     file: UploadFile = File(...),
+    organization_id: uuid.UUID | None = Form(default=None),
     document_id: uuid.UUID | None = Form(default=None),
     title: str | None = Form(default=None),
     message: str | None = Form(default=None),
+    auth: AuthContext = Depends(get_auth_context),
 ):
     service = _require_docstore()
-    if not actor_user_id.strip():
-        raise HTTPException(status_code=400, detail="actor_user_id is required.")
+    org_context = _sync_authenticated_org(
+        service,
+        auth,
+        requested_organization_id=organization_id,
+        create_if_missing=True,
+    )
     if not _is_markdown_upload(file):
         raise HTTPException(status_code=400, detail="Only Markdown files are accepted.")
 
@@ -359,8 +420,8 @@ async def upload_document(
 
     try:
         result = service.create_version(
-            organization_id=organization_id,
-            actor_user_id=actor_user_id.strip(),
+            organization_id=org_context["organization_id"],
+            actor_user_id=auth.user_id,
             markdown_bytes=markdown_bytes,
             document_id=document_id,
             title=title,
@@ -370,12 +431,15 @@ async def upload_document(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except OrganizationMismatchError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except DocumentAccessDeniedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except DocumentVersionNotFoundError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return UploadDocumentResponse(
+        organization_id=org_context["organization_id"],
         document_id=result["document_id"],
         version_id=result["version_id"],
         version_no=result["version_no"],
@@ -389,9 +453,24 @@ async def list_documents(
     organization_id: uuid.UUID,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    auth: AuthContext = Depends(get_auth_context),
 ):
     service = _require_docstore()
-    items_raw = service.list_documents(organization_id=organization_id, limit=limit, offset=offset)
+    org_context = _sync_authenticated_org(
+        service,
+        auth,
+        requested_organization_id=organization_id,
+        create_if_missing=False,
+    )
+    try:
+        items_raw = service.list_documents(
+            organization_id=org_context["organization_id"],
+            actor_user_id=auth.user_id,
+            limit=limit,
+            offset=offset,
+        )
+    except DocumentAccessDeniedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     items = [_to_document_list_item(item) for item in items_raw]
     next_offset = offset + len(items) if len(items) == limit else None
     return DocumentListResponse(items=items, limit=limit, offset=offset, next_offset=next_offset)
@@ -402,18 +481,26 @@ async def list_documents(
 async def get_document_current(
     organization_id: uuid.UUID,
     document_id: uuid.UUID,
-    actor_user_id: str | None = Query(default=None),
+    auth: AuthContext = Depends(get_auth_context),
 ):
     service = _require_docstore()
+    org_context = _sync_authenticated_org(
+        service,
+        auth,
+        requested_organization_id=organization_id,
+        create_if_missing=False,
+    )
     try:
         result = service.get_document_current(
-            organization_id=organization_id,
+            organization_id=org_context["organization_id"],
             document_id=document_id,
-            actor_user_id=actor_user_id,
+            actor_user_id=auth.user_id,
         )
     except DocumentNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except OrganizationMismatchError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except DocumentAccessDeniedError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except (DocumentHasNoVersionsError, DocumentVersionNotFoundError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -434,22 +521,30 @@ async def get_document_version(
     organization_id: uuid.UUID,
     document_id: uuid.UUID,
     version_no: int,
-    actor_user_id: str | None = Query(default=None),
+    auth: AuthContext = Depends(get_auth_context),
 ):
     if version_no <= 0:
         raise HTTPException(status_code=400, detail="version_no must be greater than 0.")
 
     service = _require_docstore()
+    org_context = _sync_authenticated_org(
+        service,
+        auth,
+        requested_organization_id=organization_id,
+        create_if_missing=False,
+    )
     try:
         result = service.get_document_version(
-            organization_id=organization_id,
+            organization_id=org_context["organization_id"],
             document_id=document_id,
             version_no=version_no,
-            actor_user_id=actor_user_id,
+            actor_user_id=auth.user_id,
         )
     except DocumentNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except OrganizationMismatchError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except DocumentAccessDeniedError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except DocumentVersionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -468,12 +563,20 @@ async def list_document_versions(
     document_id: uuid.UUID,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    auth: AuthContext = Depends(get_auth_context),
 ):
     service = _require_docstore()
+    org_context = _sync_authenticated_org(
+        service,
+        auth,
+        requested_organization_id=organization_id,
+        create_if_missing=False,
+    )
     try:
         items_raw = service.list_versions(
-            organization_id=organization_id,
+            organization_id=org_context["organization_id"],
             document_id=document_id,
+            actor_user_id=auth.user_id,
             limit=limit,
             offset=offset,
         )
@@ -481,11 +584,13 @@ async def list_document_versions(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except OrganizationMismatchError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except DocumentAccessDeniedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     items = [_to_version_metadata(item) for item in items_raw]
     next_offset = offset + len(items) if len(items) == limit else None
     return DocumentVersionsResponse(
-        organization_id=organization_id,
+        organization_id=org_context["organization_id"],
         document_id=document_id,
         items=items,
         limit=limit,
@@ -504,13 +609,23 @@ async def run_docstore_gc(
     return DocstoreGcResponse(**result)
 
 
-@app.get("/api/me")
-async def me(request: Request, user_id: str = Depends(get_current_user_id)):
-    """
-    Sample protected endpoint.
-    Returns the authenticated Clerk user ID.
-    """
-    return {"user_id": user_id}
+@app.get("/api/me", response_model=MeResponse)
+async def me(auth: AuthContext = Depends(get_auth_context)):
+    service = _require_docstore()
+    context = _sync_authenticated_org(service, auth, create_if_missing=True)
+    organization_id = context["organization_id"]
+    organization_role = context["organization_role"]
+
+    return MeResponse(
+        user_id=auth.user_id,
+        clerk_org_id=context["clerk_org_id"],
+        clerk_org_slug=context["clerk_org_slug"],
+        organization_id=organization_id,
+        organization_role=organization_role,
+        email=auth.email,
+        first_name=auth.first_name,
+        last_name=auth.last_name,
+    )
 
 
 if __name__ == "__main__":

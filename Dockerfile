@@ -28,6 +28,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY main.py .
+COPY clerk_auth.py .
 COPY document_storage.py .
 COPY parse_legislation_codes.py .
 COPY pdf_to_markdown.py .

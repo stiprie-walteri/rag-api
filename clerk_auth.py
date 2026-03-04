@@ -2,9 +2,9 @@
 Clerk authentication middleware and helpers for FastAPI.
 """
 
+from dataclasses import dataclass
 import os
 import jwt
-import httpx
 from jwt import PyJWKClient
 from fastapi import HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -18,6 +18,72 @@ PUBLIC_PATHS = [
     "/redoc",
     "/openapi.json",
 ]
+
+
+@dataclass(frozen=True)
+class AuthContext:
+    user_id: str
+    clerk_org_id: str | None = None
+    clerk_org_slug: str | None = None
+    clerk_org_role: str | None = None
+    clerk_org_permissions: tuple[str, ...] = ()
+    email: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+
+
+def _normalize_org_role(role: str | None) -> str | None:
+    if not role:
+        return None
+    if role.startswith("org:"):
+        return role
+    return f"org:{role}"
+
+
+def _normalize_org_permissions(raw_permissions: object) -> tuple[str, ...]:
+    if raw_permissions is None:
+        return ()
+    if isinstance(raw_permissions, str):
+        items = [item.strip() for item in raw_permissions.split(",") if item.strip()]
+    elif isinstance(raw_permissions, list):
+        items = [str(item).strip() for item in raw_permissions if str(item).strip()]
+    else:
+        return ()
+    normalized: list[str] = []
+    for item in items:
+        normalized.append(item if item.startswith("org:") else f"org:{item}")
+    return tuple(normalized)
+
+
+def _extract_auth_context(clerk_user: dict) -> AuthContext:
+    organization_claim = clerk_user.get("o")
+    clerk_org_id = clerk_user.get("org_id")
+    clerk_org_slug = clerk_user.get("org_slug")
+    clerk_org_role = _normalize_org_role(clerk_user.get("org_role"))
+    clerk_org_permissions = _normalize_org_permissions(clerk_user.get("org_permissions"))
+
+    if isinstance(organization_claim, dict):
+        clerk_org_id = organization_claim.get("id") or clerk_org_id
+        clerk_org_slug = organization_claim.get("slg") or clerk_org_slug
+        clerk_org_role = _normalize_org_role(organization_claim.get("rol")) or clerk_org_role
+        claim_permissions = organization_claim.get("per")
+        if claim_permissions is not None:
+            clerk_org_permissions = _normalize_org_permissions(claim_permissions)
+
+    return AuthContext(
+        user_id=clerk_user["sub"],
+        clerk_org_id=clerk_org_id,
+        clerk_org_slug=clerk_org_slug,
+        clerk_org_role=clerk_org_role,
+        clerk_org_permissions=clerk_org_permissions,
+        email=(
+            clerk_user.get("email")
+            or clerk_user.get("email_address")
+            or clerk_user.get("primary_email_address")
+        ),
+        first_name=clerk_user.get("first_name") or clerk_user.get("given_name"),
+        last_name=clerk_user.get("last_name") or clerk_user.get("family_name"),
+    )
 
 
 class ClerkAuthMiddleware(BaseHTTPMiddleware):
@@ -95,3 +161,13 @@ def get_current_user_id(request: Request) -> str:
             status_code=401, detail="User ID not found in token"
         )
     return user_id
+
+
+def get_auth_context(request: Request) -> AuthContext:
+    clerk_user = getattr(request.state, "clerk_user", None)
+    if clerk_user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_id = clerk_user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User ID not found in token")
+    return _extract_auth_context(clerk_user)

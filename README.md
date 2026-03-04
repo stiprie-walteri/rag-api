@@ -12,6 +12,7 @@
 - Versioning: each upload creates version `1` or increments version number.
 - Dedupe: identical Markdown hashes point to the same MinIO object key.
 - Audit: append-only rows for `document.upload` and `version.create` (plus optional read audits).
+- Clerk auth model: each authenticated user gets a private internal organization/workspace automatically.
 
 ## Required environment variables
 - `POSTGRES_DSN` (example: `postgresql://postgres:postgres@localhost:5432/rag_api`)
@@ -21,6 +22,7 @@
 - `MINIO_SECURE` (`true` or `false`, default `false`)
 - `MINIO_BUCKET` (default `docstore`)
 - `MIGRATIONS_DIR` (default `migrations`)
+- `CLERK_FRONTEND_API_URL` (required for Clerk JWT verification)
 
 ## Storage containers (independent from API)
 The API is not part of the storage compose stack. You can run data services separately.
@@ -50,6 +52,7 @@ Default endpoints from this compose stack:
 - MinIO console: `http://localhost:9001`
 
 ## API endpoints
+- `GET /api/me`
 - `POST /documents/upload` (also available as `/api/documents/upload`)
 - `GET /orgs/{organization_id}/documents` (also available as `/api/orgs/{organization_id}/documents`)
 - `GET /orgs/{organization_id}/documents/{document_id}` (also available as `/api/...`)
@@ -57,16 +60,20 @@ Default endpoints from this compose stack:
 - `GET /orgs/{organization_id}/documents/{document_id}/versions` (also available as `/api/...`)
 - `POST /api/admin/docstore/gc` (GC placeholder hook)
 
+Each authenticated Clerk user gets exactly one private internal workspace. There is no cross-user document sharing in the current model.
+
 ## Upload request shape
 `multipart/form-data`:
-- `organization_id` (UUID, required)
-- `actor_user_id` (required)
 - `file` (`.md` / Markdown file, required)
+- `organization_id` (UUID, optional; if omitted, the authenticated user's private workspace is resolved/created automatically. If provided, it must match that private workspace.)
 - `document_id` (UUID, optional; provide to create a new version)
 - `title` (optional)
 - `message` (optional)
 
+Use `GET /api/me` first if the client needs the internal `organization_id` for `/orgs/{organization_id}/...` requests.
+
 Upload response:
+- `organization_id`
 - `document_id`
 - `version_id`
 - `version_no`
@@ -75,6 +82,7 @@ Upload response:
 ## Migrations
 - SQL migrations are in `migrations/`.
 - On startup, the API applies unapplied SQL files tracked in `schema_migrations`.
+- `002_clerk_user_access.sql` adds local user/org/document membership tables for Clerk-backed private workspaces.
 
 ## Run
 ```bash
@@ -89,3 +97,4 @@ Use these API env values with the storage compose defaults:
 - `MINIO_SECRET_KEY=minioadmin`
 - `MINIO_SECURE=false`
 - `MINIO_BUCKET=docstore`
+- `CLERK_FRONTEND_API_URL=https://your-clerk-frontend-api`
