@@ -136,6 +136,10 @@ class ClerkAuthMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 status_code=401, content={"detail": f"Invalid token: {exc}"}
             )
+        except Exception as exc:
+            return JSONResponse(
+                status_code=401, content={"detail": f"Authentication failed: {exc}"}
+            )
 
         # Attach decoded claims so handlers can use them
         request.state.clerk_user = payload
