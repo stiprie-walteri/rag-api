@@ -352,6 +352,10 @@ class DocumentStorageService:
         organization_id: str,
         user_id: str,
     ) -> str:
+        REQUIRE_ORG_VALIDATION = os.getenv("REQUIRE_ORG_VALIDATION", "true").strip().lower() in {"1", "true", "yes", "on"}
+        if not REQUIRE_ORG_VALIDATION:
+            return "owner"
+
         role = self._get_organization_membership_role(cur, organization_id=organization_id, user_id=user_id)
         if role is None:
             raise DocumentAccessDeniedError(
@@ -533,6 +537,18 @@ class DocumentStorageService:
             organization_id=organization_id,
             user_id=user_id,
         )
+        
+        REQUIRE_ORG_VALIDATION = os.getenv("REQUIRE_ORG_VALIDATION", "true").strip().lower() in {"1", "true", "yes", "on"}
+        if not REQUIRE_ORG_VALIDATION:
+            # When validation is off, return a mock document row and 'owner' role.
+            # Downstream logic that uses this document row usually gets document properties,
+            # but since validation is off, let's gracefully fall back to a dummy row or fetch the row without asserting org match.
+            cur.execute("SELECT * FROM documents WHERE id = %s;", (document_id,))
+            doc_row = cur.fetchone()
+            if doc_row is None:
+                raise DocumentNotFoundError(f"Document {document_id} was not found.")
+            return doc_row, "owner"
+
         document_row = self._assert_document_in_org(
             cur,
             organization_id=organization_id,

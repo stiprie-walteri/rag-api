@@ -193,15 +193,6 @@ def _sync_authenticated_org(
     requested_organization_id: str | None = None,
     create_if_missing: bool,
 ) -> dict:
-    if not REQUIRE_ORG_VALIDATION:
-        return {
-            "organization_id": requested_organization_id or f"user:{auth.user_id}",
-            "clerk_org_id": auth.clerk_org_id,
-            "clerk_org_slug": auth.clerk_org_slug,
-            "organization_role": "owner",
-            "user_id": auth.user_id,
-        }
-
     try:
         context = service.sync_authenticated_user(
             clerk_user_id=auth.user_id,
