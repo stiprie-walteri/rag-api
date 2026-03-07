@@ -645,7 +645,22 @@ class DocumentStorageService:
 
                     organization_row = None
                     existing_private_org_row = self._get_organization_by_clerk_org_id(cur, private_org_key)
-                    if requested_organization_id is not None:
+                    
+                    REQUIRE_ORG_VALIDATION = os.getenv("REQUIRE_ORG_VALIDATION", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+                    if not REQUIRE_ORG_VALIDATION and requested_organization_id is not None:
+                        # Auto-upsert the requested organization to satisfy postgres foreign keys
+                        cur.execute(
+                            """
+                            INSERT INTO organizations (
+                                id, clerk_org_id, clerk_org_slug, name, created_at
+                            ) VALUES (%s, %s, %s, %s, NOW())
+                            ON CONFLICT (id) DO NOTHING;
+                            """,
+                            (requested_organization_id, private_org_key, None, organization_name)
+                        )
+                        organization_row = self._get_organization_by_id(cur, requested_organization_id)
+                    elif requested_organization_id is not None:
                         organization_row = self._get_organization_by_id(cur, requested_organization_id)
                         if organization_row is None:
                             raise OrganizationNotFoundError(
