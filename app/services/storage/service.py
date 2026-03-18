@@ -654,10 +654,10 @@ class DocumentStorageService:
                             """
                             INSERT INTO organizations (
                                 id, clerk_org_id, clerk_org_slug, name, created_at
-                            ) VALUES (%s, %s, %s, %s, NOW())
+                            ) VALUES (%s, NULL, %s, %s, NOW())
                             ON CONFLICT (id) DO NOTHING;
                             """,
-                            (requested_organization_id, private_org_key, None, organization_name)
+                            (requested_organization_id, None, organization_name)
                         )
                         organization_row = self._get_organization_by_id(cur, requested_organization_id)
                     elif requested_organization_id is not None:
@@ -989,6 +989,8 @@ class DocumentStorageService:
         document_id: str,
         version_id: str,
         actor_user_id: str,
+        title: str | None = None,
+        chunk_level: int | None = None,
     ) -> list[dict]:
         with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
             with conn.cursor() as cur:
@@ -999,8 +1001,8 @@ class DocumentStorageService:
                     user_id=actor_user_id,
                     allowed_roles=DOCUMENT_READ_ROLES,
                 )
-                cur.execute(
-                    """
+                
+                query = """
                     SELECT
                         id,
                         organization_id,
@@ -1016,10 +1018,20 @@ class DocumentStorageService:
                     WHERE organization_id = %s
                       AND document_id = %s
                       AND version_id = %s
-                    ORDER BY created_at ASC;
-                    """,
-                    (organization_id, document_id, version_id),
-                )
+                """
+                params = [organization_id, document_id, version_id]
+
+                if title is not None:
+                    query += " AND title = %s"
+                    params.append(title)
+                
+                if chunk_level is not None:
+                    query += " AND chunk_level = %s"
+                    params.append(chunk_level)
+
+                query += " ORDER BY created_at ASC;"
+
+                cur.execute(query, tuple(params))
                 rows = cur.fetchall()
 
         return list(rows)

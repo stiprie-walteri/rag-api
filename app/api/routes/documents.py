@@ -16,6 +16,7 @@ from app.services.storage.service import (
 )
 from app.services.pdf.chunking import chunk_pdf
 from app.services.pdf.converter import convert_pdf_to_markdown
+from app.services.evaluation.agent import evaluate_task_with_agent, TaskEvaluationResult
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,17 @@ class DocstoreGcResponse(BaseModel):
     unreferenced_objects: int
     candidate_keys: list[str]
     deleted_keys: list[str]
+
+
+class DocumentEvaluationRequest(BaseModel):
+    tasks: list[list[str]]
+
+
+class DocumentEvaluationResponse(BaseModel):
+    organization_id: str
+    document_id: str
+    version_id: str
+    results: list[TaskEvaluationResult]
 
 
 def _is_markdown_upload(file: UploadFile) -> bool:
@@ -400,6 +412,8 @@ async def get_document_version_chunks(
     organization_id: str,
     document_id: str,
     version_no: int,
+    title: str | None = Query(default=None, description="Filter chunks by exact title"),
+    chunk_level: int | None = Query(default=None, description="Filter chunks by hierarchical level"),
     auth: AuthContext = Depends(get_auth_context),
 ):
     if version_no <= 0:
@@ -437,6 +451,8 @@ async def get_document_version_chunks(
             document_id=document_id,
             version_id=version_id,
             actor_user_id=auth.user_id,
+            title=title,
+            chunk_level=chunk_level,
         )
     except DocumentAccessDeniedError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -448,6 +464,73 @@ async def get_document_version_chunks(
         document_id=document_id,
         version_id=version_id,
         chunks=chunks,
+    )
+
+
+@router.post(
+    "/api/orgs/{organization_id}/documents/{document_id}/versions/{version_no}/evaluate",
+    response_model=DocumentEvaluationResponse,
+)
+async def evaluate_document_tasks(
+    organization_id: str,
+    document_id: str,
+    version_no: int,
+    request: DocumentEvaluationRequest,
+    auth: AuthContext = Depends(get_auth_context),
+):
+    if version_no <= 0:
+        raise HTTPException(status_code=400, detail="version_no must be greater than 0.")
+    if not request.tasks:
+        raise HTTPException(status_code=400, detail="No tasks provided.")
+
+    service = require_docstore()
+    org_context = sync_authenticated_org(
+        service,
+        auth,
+        requested_organization_id=organization_id,
+        create_if_missing=False,
+    )
+
+    try:
+        ver_result = service.get_document_version(
+            organization_id=org_context["organization_id"],
+            document_id=document_id,
+            version_no=version_no,
+            actor_user_id=auth.user_id,
+        )
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OrganizationMismatchError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except DocumentAccessDeniedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except DocumentVersionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    version_id = ver_result["version"]["version_id"]
+
+    try:
+        chunks_raw = service.get_document_chunks(
+            organization_id=org_context["organization_id"],
+            document_id=document_id,
+            version_id=version_id,
+            actor_user_id=auth.user_id,
+        )
+    except DocumentAccessDeniedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    results = []
+    # For a real scalable system these could be evaluated concurrently,
+    # but sequential processing is sufficient to demonstrate the OpenRouter agent feature.
+    for task_list in request.tasks:
+        result = evaluate_task_with_agent(task_list, chunks_raw)
+        results.append(result)
+
+    return DocumentEvaluationResponse(
+        organization_id=org_context["organization_id"],
+        document_id=document_id,
+        version_id=version_id,
+        results=results,
     )
 
 
