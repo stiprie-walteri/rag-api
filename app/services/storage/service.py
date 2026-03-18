@@ -944,6 +944,86 @@ class DocumentStorageService:
             "size_bytes": size_bytes,
         }
 
+    def save_document_chunks(
+        self,
+        *,
+        organization_id: str,
+        document_id: str,
+        version_id: str,
+        chunks: list[dict],
+    ) -> None:
+        if not chunks:
+            return
+
+        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    for chunk in chunks:
+                        chunk_id = str(uuid.uuid4())
+                        cur.execute(
+                            """
+                            INSERT INTO document_chunks (
+                                id,
+                                organization_id,
+                                document_id,
+                                version_id,
+                                chunk_level,
+                                title,
+                                start_page,
+                                end_page,
+                                text_content,
+                                created_at
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW());
+                            """,
+                            (
+                                chunk_id,
+                                chunk.get("text", ""),
+                            ),
+                        )
+
+    def get_document_chunks(
+        self,
+        *,
+        organization_id: str,
+        document_id: str,
+        version_id: str,
+        actor_user_id: str,
+    ) -> list[dict]:
+        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                self._assert_document_access(
+                    cur,
+                    organization_id=organization_id,
+                    document_id=document_id,
+                    user_id=actor_user_id,
+                    allowed_roles=DOCUMENT_READ_ROLES,
+                )
+                cur.execute(
+                    """
+                    SELECT
+                        id,
+                        organization_id,
+                        document_id,
+                        version_id,
+                        chunk_level,
+                        title,
+                        start_page,
+                        end_page,
+                        text_content,
+                        created_at
+                    FROM document_chunks
+                    WHERE organization_id = %s
+                      AND document_id = %s
+                      AND version_id = %s
+                    ORDER BY created_at ASC;
+                    """,
+                    (organization_id, document_id, version_id),
+                )
+                rows = cur.fetchall()
+
+        return list(rows)
+
     def list_documents(
         self,
         *,

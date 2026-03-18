@@ -26,20 +26,11 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY main.py .
-COPY clerk_auth.py .
-COPY document_storage.py .
-COPY parse_legislation_codes.py .
-COPY pdf_to_markdown.py .
+# Copy application package
+COPY app/ /app/app/
 COPY full_response.json .
-COPY compare_chunks.py .
-COPY clerk_auth.py .
 COPY migrations/ /app/migrations/
-
-# Copy legislation and utility files
-COPY legislation_util/ /app/legislation_util/
-COPY get_submission_chunks.py .
+COPY .env .
 
 # Change ownership to non-root user
 RUN chown -R appuser:appuser /app
@@ -54,5 +45,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/api/healthz || exit 1
 
-# Run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the application using the new app.main module path
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
