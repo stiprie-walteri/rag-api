@@ -1046,6 +1046,86 @@ class DocumentStorageService:
             for row in rows
         ]
 
+    def delete_document(
+        self,
+        *,
+        organization_id: str,
+        document_id: str,
+        actor_user_id: str,
+    ) -> dict:
+        """Delete a document and all its associated chunks, versions, and MinIO objects.
+
+        Returns a summary of what was deleted.
+        """
+        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                # Assert the user has owner-level access to the document
+                self._assert_document_access(
+                    cur,
+                    organization_id=organization_id,
+                    document_id=document_id,
+                    actor_user_id=actor_user_id,
+                    required_roles={"owner"},
+                )
+
+                # Collect all MinIO object keys from all versions to delete later
+                cur.execute(
+                    """
+                    SELECT object_key FROM document_versions
+                    WHERE document_id = %s AND organization_id = %s;
+                    """,
+                    (document_id, organization_id),
+                )
+                version_rows = cur.fetchall()
+                object_keys = [r["object_key"] for r in version_rows if r.get("object_key")]
+
+                # Count chunks for reporting
+                cur.execute(
+                    "SELECT COUNT(*) AS cnt FROM document_chunks WHERE document_id = %s AND organization_id = %s;",
+                    (document_id, organization_id),
+                )
+                chunk_count = (cur.fetchone() or {}).get("cnt", 0)
+
+                # Delete chunks first (FK child of versions)
+                cur.execute(
+                    "DELETE FROM document_chunks WHERE document_id = %s AND organization_id = %s;",
+                    (document_id, organization_id),
+                )
+
+                # Delete versions (FK child of documents)
+                cur.execute(
+                    "DELETE FROM document_versions WHERE document_id = %s AND organization_id = %s;",
+                    (document_id, organization_id),
+                )
+
+                # Delete the document record itself
+                cur.execute(
+                    "DELETE FROM documents WHERE id = %s AND organization_id = %s;",
+                    (document_id, organization_id),
+                )
+
+                conn.commit()
+
+        # Delete MinIO objects outside the DB transaction (best-effort)
+        deleted_objects: list[str] = []
+        failed_objects: list[str] = []
+        for key in object_keys:
+            try:
+                self.minio_client.remove_object(self.settings.minio_bucket, key)
+                deleted_objects.append(key)
+            except S3Error as exc:
+                logger.warning("Failed to delete MinIO object %s: %s", key, exc)
+                failed_objects.append(key)
+
+        return {
+            "document_id": document_id,
+            "organization_id": organization_id,
+            "chunks_deleted": chunk_count,
+            "versions_deleted": len(version_rows),
+            "objects_deleted": len(deleted_objects),
+            "objects_failed": len(failed_objects),
+        }
+
     def list_documents(
         self,
         *,

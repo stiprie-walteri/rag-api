@@ -534,6 +534,48 @@ async def evaluate_document_tasks(
     )
 
 
+class DocumentDeleteResponse(BaseModel):
+    document_id: str
+    organization_id: str
+    chunks_deleted: int
+    versions_deleted: int
+    objects_deleted: int
+    objects_failed: int
+
+
+@router.delete(
+    "/api/orgs/{organization_id}/documents/{document_id}",
+    response_model=DocumentDeleteResponse,
+)
+async def delete_document(
+    organization_id: str,
+    document_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+):
+    service = require_docstore()
+    org_context = sync_authenticated_org(
+        service,
+        auth,
+        requested_organization_id=organization_id,
+        create_if_missing=False,
+    )
+
+    try:
+        result = service.delete_document(
+            organization_id=org_context["organization_id"],
+            document_id=document_id,
+            actor_user_id=auth.user_id,
+        )
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OrganizationMismatchError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except DocumentAccessDeniedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    return DocumentDeleteResponse(**result)
+
+
 @router.post("/api/admin/docstore/gc", response_model=DocstoreGcResponse)
 async def run_docstore_gc(
     dry_run: bool = Query(default=True),
