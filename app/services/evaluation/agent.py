@@ -30,6 +30,9 @@ class TaskEvaluationResult(BaseModel):
     task: List[str]
     exists: bool
     explanation: str
+    correctness_score: int = 0
+    missing_sections: List[str] = []
+    incorrect_sections: List[Dict[str, str]] = []
 
 def _format_toc(chunks: List[Dict[str, Any]]) -> str:
     toc_lines = []
@@ -65,14 +68,32 @@ Please verify that the document contains information about this:
 Available tool call functions:
 GetSections(section_indexes) - Use this to retrieve the full text content of specific sections by their integer index.
 
-IMPORTANT: When you have finished gathering information using the GetSections tool, summarize your findings internally and output a raw JSON object as your final response. DO NOT wrap it in markdown block quotes like ```json, just output the raw JSON brackets.
-Format strictly to:
+IMPORTANT:
+- Use GetSections to fetch the exact sections you rely on.
+- When you have finished gathering information, output a raw JSON object as your final response.
+- DO NOT wrap the JSON in markdown (no ```json fences).
+
+Your final JSON MUST match this structure exactly:
 {{
-  "exists": true or false,
-  "explanation": "Detailed explanation of exactly where and how this task is covered, or why it is missing."
+  "exists": true | false,
+  "explanation": "string",
+  "Correctness Score": 0-100,
+  "Missing Sections": ["string", "string"],
+  "Incorrect Sections": [
+    {{
+      "ID": "string (section/chunk id)",
+      "Quote": "string (specific quote from the section)",
+      "Comment": "string (what should be improved)"
+    }}
+  ]
 }}
+
+Guidance:
+- "Correctness Score" is an integer percent (0-100) reflecting overall coverage and accuracy for the task.
+- "Missing Sections" lists section titles/codes that should exist for the task but are not present in the document.
+- "Incorrect Sections" lists sections that appear relevant but contain incorrect, conflicting, or insufficient information. Use the section index from TOC as the "ID" when applicable.
 """
-    
+
     tools = [
         {
             "type": "function",
@@ -140,7 +161,10 @@ Format strictly to:
             # Try to parse the final JSON response
             exists = False
             explanation = "Failed to parse evaluation response."
-            
+            correctness_score = 0
+            missing_sections: List[str] = []
+            incorrect_sections: List[Dict[str, str]] = []
+
             try:
                 # Basic cleanup in case the model added markdown blocks
                 if final_text.startswith("```json"):
@@ -149,10 +173,36 @@ Format strictly to:
                     final_text = final_text[3:]
                 if final_text.endswith("```"):
                     final_text = final_text[:-3]
-                    
+
                 data = json.loads(final_text.strip())
                 exists = bool(data.get("exists", False))
-                explanation = str(data.get("explanation", final_text))
+                explanation = str(data.get("explanation", "")) or str(data.get("explanation", final_text))
+
+                # Support the new fields (use exact keys as requested, but tolerate snake_case too)
+                score_val = data.get("Correctness Score", data.get("correctness_score", 0))
+                try:
+                    correctness_score = int(score_val)
+                except Exception:
+                    correctness_score = 0
+                correctness_score = max(0, min(100, correctness_score))
+
+                ms_val = data.get("Missing Sections", data.get("missing_sections", []))
+                if isinstance(ms_val, list):
+                    missing_sections = [str(x) for x in ms_val if str(x).strip()]
+
+                is_val = data.get("Incorrect Sections", data.get("incorrect_sections", []))
+                if isinstance(is_val, list):
+                    # Expect list[object] with ID/Quote/Comment
+                    cleaned: List[Dict[str, str]] = []
+                    for item in is_val:
+                        if not isinstance(item, dict):
+                            continue
+                        cleaned.append({
+                            "ID": str(item.get("ID", "")).strip(),
+                            "Quote": str(item.get("Quote", "")).strip(),
+                            "Comment": str(item.get("Comment", "")).strip(),
+                        })
+                    incorrect_sections = [x for x in cleaned if x.get("ID") or x.get("Quote") or x.get("Comment")]
             except Exception as e:
                 logger.warning(f"Failed to parse agent JSON output: {final_text}. Error: {e}")
                 explanation = final_text
@@ -160,11 +210,17 @@ Format strictly to:
             return TaskEvaluationResult(
                 task=task_list,
                 exists=exists,
-                explanation=explanation
+                explanation=explanation,
+                correctness_score=correctness_score,
+                missing_sections=missing_sections,
+                incorrect_sections=incorrect_sections,
             )
 
     return TaskEvaluationResult(
         task=task_list,
         exists=False,
-        explanation=f"Evaluation failed: Reached maximum tool calls limit ({AGENT_MAX_TOOL_CALLS})."
+        explanation=f"Evaluation failed: Reached maximum tool calls limit ({AGENT_MAX_TOOL_CALLS}).",
+        correctness_score=0,
+        missing_sections=[],
+        incorrect_sections=[],
     )
