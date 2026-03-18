@@ -978,6 +978,13 @@ class DocumentStorageService:
                             """,
                             (
                                 chunk_id,
+                                organization_id,
+                                document_id,
+                                version_id,
+                                chunk.get("level", 1),
+                                chunk.get("title", ""),
+                                chunk.get("start_page", 1),
+                                chunk.get("end_page", 1),
                                 chunk.get("text", ""),
                             ),
                         )
