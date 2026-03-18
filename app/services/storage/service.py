@@ -1041,7 +1041,10 @@ class DocumentStorageService:
                 cur.execute(query, tuple(params))
                 rows = cur.fetchall()
 
-        return list(rows)
+        return [
+            {**row, "id": str(row["id"])}
+            for row in rows
+        ]
 
     def list_documents(
         self,
