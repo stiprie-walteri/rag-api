@@ -30,7 +30,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ /app/app/
 COPY full_response.json .
 COPY migrations/ /app/migrations/
-COPY .env .
 
 # Change ownership to non-root user
 RUN chown -R appuser:appuser /app
