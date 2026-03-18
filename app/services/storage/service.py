@@ -1064,8 +1064,8 @@ class DocumentStorageService:
                     cur,
                     organization_id=organization_id,
                     document_id=document_id,
-                    actor_user_id=actor_user_id,
-                    required_roles={"owner"},
+                    user_id=actor_user_id,
+                    allowed_roles={"owner"},
                 )
 
                 # Collect all MinIO object keys from all versions to delete later
