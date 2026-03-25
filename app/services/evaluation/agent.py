@@ -184,15 +184,23 @@ Guidance:
             incorrect_sections: List[Dict[str, str]] = []
 
             try:
-                # Basic cleanup in case the model added markdown blocks
-                if final_text.startswith("```json"):
-                    final_text = final_text[7:]
-                if final_text.startswith("```"):
-                    final_text = final_text[3:]
-                if final_text.endswith("```"):
-                    final_text = final_text[:-3]
+                # Extract the JSON object robustly:
+                # 1. Strip markdown code fences if present
+                # 2. Find the first '{' and last '}' to handle models that
+                #    prepend prose before the JSON object.
+                cleaned = final_text.strip()
+                if "```json" in cleaned:
+                    cleaned = cleaned.split("```json", 1)[1]
+                if "```" in cleaned:
+                    cleaned = cleaned.split("```")[0]
+                cleaned = cleaned.strip()
 
-                data = json.loads(final_text.strip())
+                start = cleaned.find("{")
+                end = cleaned.rfind("}")
+                if start != -1 and end != -1 and end >= start:
+                    cleaned = cleaned[start : end + 1]
+
+                data = json.loads(cleaned)
                 exists = bool(data.get("exists", False))
                 explanation = str(data.get("explanation", "")) or str(data.get("explanation", final_text))
 
