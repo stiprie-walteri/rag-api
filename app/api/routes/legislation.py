@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import yaml
 import tempfile
 import uuid
 from pathlib import Path
@@ -175,9 +176,7 @@ class TemplatesResponse(BaseModel):
 
 @router.get("/api/legislation/templates", response_model=TemplatesResponse)
 async def list_legislation_templates(auth: AuthContext = Depends(get_auth_context)):
-    import yaml
-    
-    templates_dir = Path("legislation-templates")
+    templates_dir = Path(os.getenv("LEGISLATION_TEMPLATES_DIR", "legislation-templates"))
     templates = []
     if templates_dir.exists() and templates_dir.is_dir():
         for file_path in templates_dir.glob("*.yaml"):

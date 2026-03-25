@@ -1,7 +1,9 @@
 import os
 import logging
 import tempfile
+import yaml
 from datetime import datetime
+from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
@@ -486,11 +488,8 @@ async def evaluate_document_tasks(
     system_prompt_override = None
 
     if template_id:
-        import yaml
-        from pathlib import Path
-        
         template_data = None
-        templates_dir = Path("legislation-templates")
+        templates_dir = Path(os.getenv("LEGISLATION_TEMPLATES_DIR", "legislation-templates"))
         if templates_dir.exists() and templates_dir.is_dir():
             for file_path in templates_dir.glob("*.yaml"):
                 try:

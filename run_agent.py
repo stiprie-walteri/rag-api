@@ -169,8 +169,9 @@ def main():
 
     if args.template_id:
         import glob
+        templates_dir = os.getenv("LEGISLATION_TEMPLATES_DIR", "legislation-templates")
         template_data = None
-        for file_path in glob.glob("legislation-templates/*.yaml"):
+        for file_path in glob.glob(f"{templates_dir}/*.yaml"):
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f)
