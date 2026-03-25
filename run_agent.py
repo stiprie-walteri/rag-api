@@ -55,15 +55,28 @@ def _format_toc(chunks: List[Dict[str, Any]]) -> str:
         toc_lines.append(f"{level_prefix}{i}: {title} (Pages {c['start_page']}-{c['end_page']})")
     return "\n".join(toc_lines)
 
-def RunAgent(task_list: List[str], chunks: List[Dict[str, Any]]):
+def RunAgent(task_list: List[str], chunks: List[Dict[str, Any]], system_prompt_override: str | None = None):
     task_flattened = "\n".join(f"- {t}" for t in task_list)
     logger.info(f"==> Starting evaluation for task: {task_list[0]}")
     logger.debug(f"Task details: {task_flattened}")
 
     toc_str = _format_toc(chunks)
     
-    # Context prompt using User's template
-    system_prompt = f"""
+    if system_prompt_override:
+        system_prompt = f"""{system_prompt_override}
+
+TOC:
+{toc_str}
+---
+Task:
+Please verify that the document contains information about this:
+{task_flattened}
+
+Available tool call functions:
+GetSections(section_indexes) - Use this to retrieve the full text content of specific sections by their integer index.
+"""
+    else:
+        system_prompt = f"""
 TOC:
 {toc_str}
 ---
@@ -145,21 +158,43 @@ GetSections(section_indexes) - Use this to retrieve the full text content of spe
 def main():
     parser = argparse.ArgumentParser(description="Run OpenRouter Agent over Tasks.yaml")
     parser.add_argument("--tasks", default="Tasks.yaml", help="Path to YAML tasks file")
+    parser.add_argument("--template-id", default=None, help="Template ID from legislation-templates to use")
     parser.add_argument("--org-id", required=True, help="Organization ID")
     parser.add_argument("--doc-id", required=True, help="Document ID")
     parser.add_argument("--version-id", required=True, help="Version ID")
     args = parser.parse_args()
 
-    if not os.path.exists(args.tasks):
-        logger.error(f"Tasks file not found: {args.tasks}")
-        sys.exit(1)
+    task_list_array = []
+    system_prompt_override = None
 
-    with open(args.tasks, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+    if args.template_id:
+        import glob
+        template_data = None
+        for file_path in glob.glob("legislation-templates/*.yaml"):
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+                    template_id_val = data.get("id", os.path.splitext(os.path.basename(file_path))[0])
+                    if template_id_val == args.template_id:
+                        template_data = data
+                        break
+            except Exception:
+                pass
+                
+        if not template_data:
+            logger.error(f"Template '{args.template_id}' not found.")
+            sys.exit(1)
+            
+        task_list_array = template_data.get("Tasks", [])
+        system_prompt_override = template_data.get("system_prompt")
+            
+    if not task_list_array and os.path.exists(args.tasks):
+        with open(args.tasks, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+            task_list_array = data.get("Tasks", [])
 
-    task_list_array = data.get("Tasks", [])
     if not task_list_array:
-        logger.error("No 'Tasks' found in the yaml file.")
+        logger.error("No 'Tasks' found.")
         sys.exit(1)
 
     logger.info("Fetching document chunks from database...")
@@ -172,7 +207,7 @@ def main():
 
     for i, t_list in enumerate(task_list_array):
         logger.info(f"=== Processing Task {i+1} of {len(task_list_array)} ===")
-        RunAgent(t_list, chunks)
+        RunAgent(t_list, chunks, system_prompt_override=system_prompt_override)
 
 if __name__ == "__main__":
     main()

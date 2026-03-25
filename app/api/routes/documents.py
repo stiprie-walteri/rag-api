@@ -110,7 +110,7 @@ class DocstoreGcResponse(BaseModel):
 
 
 class DocumentEvaluationRequest(BaseModel):
-    tasks: list[list[str]]
+    tasks: list[list[str]] | None = None
 
 
 class DocumentEvaluationResponse(BaseModel):
@@ -476,12 +476,41 @@ async def evaluate_document_tasks(
     document_id: str,
     version_no: int,
     request: DocumentEvaluationRequest,
+    template_id: str | None = Query(default=None, description="Optional template ID to use for system prompt and tasks"),
     auth: AuthContext = Depends(get_auth_context),
 ):
     if version_no <= 0:
         raise HTTPException(status_code=400, detail="version_no must be greater than 0.")
-    if not request.tasks:
-        raise HTTPException(status_code=400, detail="No tasks provided.")
+
+    tasks_to_run = request.tasks or []
+    system_prompt_override = None
+
+    if template_id:
+        import yaml
+        from pathlib import Path
+        
+        template_data = None
+        templates_dir = Path("legislation-templates")
+        if templates_dir.exists() and templates_dir.is_dir():
+            for file_path in templates_dir.glob("*.yaml"):
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        data = yaml.safe_load(f)
+                        if data.get("id", file_path.stem) == template_id:
+                            template_data = data
+                            break
+                except Exception as exc:
+                    logger.warning("Failed to load template %s: %s", file_path, exc)
+                    
+        if not template_data:
+            raise HTTPException(status_code=404, detail=f"Template {template_id} not found.")
+            
+        system_prompt_override = template_data.get("system_prompt")
+        if not request.tasks:
+            tasks_to_run = template_data.get("Tasks", [])
+
+    if not tasks_to_run:
+        raise HTTPException(status_code=400, detail="No tasks provided and no template tasks found.")
 
     service = require_docstore()
     org_context = sync_authenticated_org(
@@ -522,8 +551,12 @@ async def evaluate_document_tasks(
     results = []
     # For a real scalable system these could be evaluated concurrently,
     # but sequential processing is sufficient to demonstrate the OpenRouter agent feature.
-    for task_list in request.tasks:
-        result = evaluate_task_with_agent(task_list, chunks_raw)
+    for task_list in tasks_to_run:
+        result = evaluate_task_with_agent(
+            task_list=task_list, 
+            chunks=chunks_raw, 
+            system_prompt_override=system_prompt_override
+        )
         results.append(result)
 
     return DocumentEvaluationResponse(

@@ -4,8 +4,9 @@ import os
 import tempfile
 import uuid
 from pathlib import Path
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile, Depends
 from pydantic import BaseModel
+from app.core.auth import AuthContext, get_auth_context
 
 from app.services.legislation.compare import IssueList, call_openai_for_issues, find_sections_for_code, init_openai_from_env
 from app.services.legislation.submission import get_submission_by_codes
@@ -161,3 +162,32 @@ async def parse_legislation_mock():
     if mock_response:
         return ParseResponse(**mock_response)
     raise HTTPException(status_code=404, detail="Mock response not available")
+
+
+class TemplateItem(BaseModel):
+    id: str
+    name: str
+
+
+class TemplatesResponse(BaseModel):
+    templates: list[TemplateItem]
+
+
+@router.get("/api/legislation/templates", response_model=TemplatesResponse)
+async def list_legislation_templates(auth: AuthContext = Depends(get_auth_context)):
+    import yaml
+    
+    templates_dir = Path("legislation-templates")
+    templates = []
+    if templates_dir.exists() and templates_dir.is_dir():
+        for file_path in templates_dir.glob("*.yaml"):
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+                    name = data.get("name", file_path.stem)
+                    template_id_val = data.get("id", file_path.stem)
+                    templates.append(TemplateItem(id=template_id_val, name=name))
+            except Exception as exc:
+                logger.warning("Failed to load template %s: %s", file_path, exc)
+    return TemplatesResponse(templates=templates)
+

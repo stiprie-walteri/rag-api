@@ -42,7 +42,11 @@ def _format_toc(chunks: List[Dict[str, Any]]) -> str:
         toc_lines.append(f"{level_prefix}{i}: {title} (Pages {c.get('start_page', '?')}-{c.get('end_page', '?')})")
     return "\n".join(toc_lines)
 
-def evaluate_task_with_agent(task_list: List[str], chunks: List[Dict[str, Any]]) -> TaskEvaluationResult:
+def evaluate_task_with_agent(
+    task_list: List[str], 
+    chunks: List[Dict[str, Any]],
+    system_prompt_override: Optional[str] = None
+) -> TaskEvaluationResult:
     try:
         client = get_openrouter_client()
     except ValueError as e:
@@ -55,7 +59,21 @@ def evaluate_task_with_agent(task_list: List[str], chunks: List[Dict[str, Any]])
     task_flattened = "\n".join(f"- {t}" for t in task_list)
     toc_str = _format_toc(chunks)
     
-    system_prompt = f"""
+    if system_prompt_override:
+        system_prompt = f"""{system_prompt_override}
+
+TOC:
+{toc_str}
+---
+Task:
+Please verify that the document contains information about this:
+{task_flattened}
+
+Available tool call functions:
+GetSections(section_indexes) - Use this to retrieve the full text content of specific sections by their integer index.
+"""
+    else:
+        system_prompt = f"""
 You are a document verification AI. Your job is to verify if the provided task components are explicitly mentioned or covered within the document.
 
 TOC:
