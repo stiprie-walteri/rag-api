@@ -42,12 +42,14 @@ class DocumentVersionMetadata(BaseModel):
     created_by: str
     message: str | None = None
     parent_version_id: str | None = None
+    compliance_result: dict | None = None
 
 
 class DocumentMetadata(BaseModel):
     document_id: str
     organization_id: str
     title: str | None = None
+    folder_id: str | None = None
     created_at: datetime
     created_by: str
     updated_at: datetime
@@ -607,6 +609,49 @@ async def delete_document(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     return DocumentDeleteResponse(**result)
+
+
+class SaveComplianceRequest(BaseModel):
+    result: dict
+
+
+@router.post(
+    "/api/orgs/{organization_id}/documents/{document_id}/versions/{version_no}/compliance",
+    status_code=204,
+)
+async def save_compliance_result(
+    organization_id: str,
+    document_id: str,
+    version_no: int,
+    body: SaveComplianceRequest,
+    auth: AuthContext = Depends(get_auth_context),
+):
+    service = require_docstore()
+    org_context = sync_authenticated_org(
+        service,
+        auth,
+        requested_organization_id=organization_id,
+        create_if_missing=False,
+    )
+
+    try:
+        result = service.get_document_version(
+            organization_id=org_context["organization_id"],
+            document_id=document_id,
+            version_no=version_no,
+            actor_user_id=auth.user_id,
+        )
+        service.save_compliance_result(
+            organization_id=org_context["organization_id"],
+            version_id=result["version"]["version_id"],
+            result=body.result,
+        )
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (OrganizationMismatchError, DocumentAccessDeniedError) as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except DocumentVersionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/api/admin/docstore/gc", response_model=DocstoreGcResponse)

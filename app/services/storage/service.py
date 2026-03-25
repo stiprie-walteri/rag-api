@@ -598,6 +598,7 @@ class DocumentStorageService:
             "created_by": row["created_by"],
             "message": row["message"],
             "parent_version_id": row["parent_version_id"],
+            "compliance_result": row.get("compliance_result"),
         }
 
     @staticmethod
@@ -1147,6 +1148,7 @@ class DocumentStorageService:
                         d.id AS document_id,
                         d.organization_id,
                         d.title,
+                        d.folder_id,
                         d.created_at AS document_created_at,
                         d.created_by AS document_created_by,
                         d.updated_at AS document_updated_at,
@@ -1160,6 +1162,7 @@ class DocumentStorageService:
                         v.created_by AS version_created_by,
                         v.message,
                         v.parent_version_id,
+                        v.compliance_result,
                         CASE
                             WHEN %s = 'owner' THEN 'owner'
                             ELSE dm.role
@@ -1198,6 +1201,7 @@ class DocumentStorageService:
                     "created_by": row["version_created_by"],
                     "message": row["message"],
                     "parent_version_id": row["parent_version_id"],
+                    "compliance_result": row.get("compliance_result"),
                 }
 
             items.append(
@@ -1205,6 +1209,7 @@ class DocumentStorageService:
                     "document_id": row["document_id"],
                     "organization_id": row["organization_id"],
                     "title": row["title"],
+                    "folder_id": row.get("folder_id"),
                     "created_at": row["document_created_at"],
                     "created_by": row["document_created_by"],
                     "updated_at": row["document_updated_at"],
@@ -1235,7 +1240,8 @@ class DocumentStorageService:
                 created_at,
                 created_by,
                 message,
-                parent_version_id
+                parent_version_id,
+                compliance_result
             FROM document_versions
             WHERE organization_id = %s
               AND document_id = %s
@@ -1266,7 +1272,8 @@ class DocumentStorageService:
                 created_at,
                 created_by,
                 message,
-                parent_version_id
+                parent_version_id,
+                compliance_result
             FROM document_versions
             WHERE organization_id = %s
               AND document_id = %s
@@ -1431,7 +1438,8 @@ class DocumentStorageService:
                         created_at,
                         created_by,
                         message,
-                        parent_version_id
+                        parent_version_id,
+                        compliance_result
                     FROM document_versions
                     WHERE organization_id = %s
                       AND document_id = %s
@@ -1679,3 +1687,151 @@ class DocumentStorageService:
             "candidate_keys": unreferenced[:max_delete],
             "deleted_keys": deleted,
         }
+
+    # ------------------------------------------------------------------
+    # Compliance result persistence
+    # ------------------------------------------------------------------
+
+    def save_compliance_result(
+        self,
+        *,
+        organization_id: str,
+        version_id: str,
+        result: dict[str, Any],
+    ) -> None:
+        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE document_versions
+                           SET compliance_result = %s
+                         WHERE id = %s
+                           AND organization_id = %s;
+                        """,
+                        (Json(result), version_id, organization_id),
+                    )
+                    if cur.rowcount == 0:
+                        raise DocumentNotFoundError(f"Version {version_id} not found")
+
+    # ------------------------------------------------------------------
+    # Folder management
+    # ------------------------------------------------------------------
+
+    def create_folder(
+        self,
+        *,
+        organization_id: str,
+        name: str,
+        actor_user_id: str,
+    ) -> dict[str, Any]:
+        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    self._ensure_user_in_organization(
+                        cur, organization_id=organization_id, user_id=actor_user_id
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO folders (organization_id, name, created_by)
+                        VALUES (%s, %s, %s)
+                        RETURNING id, organization_id, name, created_at, created_by;
+                        """,
+                        (organization_id, name, actor_user_id),
+                    )
+                    return cur.fetchone()  # type: ignore[return-value]
+
+    def list_folders(
+        self,
+        *,
+        organization_id: str,
+        actor_user_id: str,
+    ) -> list[dict[str, Any]]:
+        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                self._ensure_user_in_organization(
+                    cur, organization_id=organization_id, user_id=actor_user_id
+                )
+                cur.execute(
+                    """
+                    SELECT id, organization_id, name, created_at, created_by
+                    FROM folders
+                    WHERE organization_id = %s
+                    ORDER BY name ASC;
+                    """,
+                    (organization_id,),
+                )
+                return cur.fetchall()
+
+    def rename_folder(
+        self,
+        *,
+        folder_id: str,
+        organization_id: str,
+        name: str,
+        actor_user_id: str,
+    ) -> None:
+        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    self._ensure_user_in_organization(
+                        cur, organization_id=organization_id, user_id=actor_user_id
+                    )
+                    cur.execute(
+                        """
+                        UPDATE folders SET name = %s
+                        WHERE id = %s AND organization_id = %s;
+                        """,
+                        (name, folder_id, organization_id),
+                    )
+                    if cur.rowcount == 0:
+                        raise DocumentNotFoundError(f"Folder {folder_id} not found")
+
+    def delete_folder(
+        self,
+        *,
+        folder_id: str,
+        organization_id: str,
+        actor_user_id: str,
+    ) -> None:
+        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    self._ensure_user_in_organization(
+                        cur, organization_id=organization_id, user_id=actor_user_id
+                    )
+                    # documents.folder_id becomes NULL via ON DELETE SET NULL
+                    cur.execute(
+                        "DELETE FROM folders WHERE id = %s AND organization_id = %s;",
+                        (folder_id, organization_id),
+                    )
+                    if cur.rowcount == 0:
+                        raise DocumentNotFoundError(f"Folder {folder_id} not found")
+
+    def move_document_to_folder(
+        self,
+        *,
+        document_id: str,
+        organization_id: str,
+        folder_id: str | None,
+        actor_user_id: str,
+    ) -> None:
+        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    self._assert_document_access(
+                        cur,
+                        organization_id=organization_id,
+                        document_id=document_id,
+                        user_id=actor_user_id,
+                        allowed_roles=DOCUMENT_WRITE_ROLES,
+                    )
+                    cur.execute(
+                        """
+                        UPDATE documents SET folder_id = %s
+                        WHERE id = %s AND organization_id = %s;
+                        """,
+                        (folder_id, document_id, organization_id),
+                    )
+                    if cur.rowcount == 0:
+                        raise DocumentNotFoundError(f"Document {document_id} not found")
