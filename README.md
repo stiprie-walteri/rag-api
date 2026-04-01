@@ -3,6 +3,7 @@
 ## What it does
 - Upload and process MOE PDFs for legislation checks.
 - Persist uploaded Markdown documents with organization scoping.
+- Group every document inside a project within the user's workspace.
 - Store document metadata/version/audit in PostgreSQL.
 - Store Markdown bodies in MinIO using content-addressed object keys.
 
@@ -53,11 +54,18 @@ Default endpoints from this compose stack:
 
 ## API endpoints
 - `GET /api/me`
-- `POST /documents/upload` (also available as `/api/documents/upload`)
-- `GET /orgs/{organization_id}/documents` (also available as `/api/orgs/{organization_id}/documents`)
-- `GET /orgs/{organization_id}/documents/{document_id}` (also available as `/api/...`)
-- `GET /orgs/{organization_id}/documents/{document_id}/versions/{version_no}` (also available as `/api/...`)
-- `GET /orgs/{organization_id}/documents/{document_id}/versions` (also available as `/api/...`)
+- `GET /api/orgs/{organization_id}/projects`
+- `POST /api/orgs/{organization_id}/projects`
+- `GET /api/orgs/{organization_id}/projects/{project_id}`
+- `PATCH /api/orgs/{organization_id}/projects/{project_id}`
+- `DELETE /api/orgs/{organization_id}/projects/{project_id}`
+- `GET /api/orgs/{organization_id}/projects/{project_id}/documents`
+- `POST /api/documents/upload`
+- `GET /api/orgs/{organization_id}/documents`
+- `PATCH /api/orgs/{organization_id}/documents/{document_id}/project`
+- `GET /api/orgs/{organization_id}/documents/{document_id}`
+- `GET /api/orgs/{organization_id}/documents/{document_id}/versions/{version_no}`
+- `GET /api/orgs/{organization_id}/documents/{document_id}/versions`
 - `POST /api/admin/docstore/gc` (GC placeholder hook)
 
 Each authenticated Clerk user gets exactly one private internal workspace. There is no cross-user document sharing in the current model.
@@ -66,6 +74,7 @@ Each authenticated Clerk user gets exactly one private internal workspace. There
 `multipart/form-data`:
 - `file` (`.md` / Markdown file, required)
 - `organization_id` (UUID, optional; if omitted, the authenticated user's private workspace is resolved/created automatically. If provided, it must match that private workspace.)
+- `project_id` (required for new documents, optional for new versions)
 - `document_id` (UUID, optional; provide to create a new version)
 - `title` (optional)
 - `message` (optional)

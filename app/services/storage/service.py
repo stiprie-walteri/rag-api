@@ -58,6 +58,10 @@ class DocumentOperationConflictError(DocumentStorageError):
     pass
 
 
+class ProjectNotFoundError(DocumentStorageError):
+    pass
+
+
 def _parse_bool(value: str | None, *, default: bool) -> bool:
     if value is None:
         return default
@@ -482,20 +486,89 @@ class DocumentStorageService:
         cur.execute(
             f"""
             SELECT
-                id,
-                organization_id,
-                title,
-                current_version_id,
-                created_at,
-                created_by,
-                updated_at
-            FROM documents
-            WHERE id = %s
-              AND organization_id = %s{lock_clause};
+                d.id,
+                d.organization_id,
+                d.title,
+                d.folder_id AS project_id,
+                d.current_version_id,
+                d.created_at,
+                d.created_by,
+                d.updated_at,
+                f.name AS project_name,
+                f.description AS project_description,
+                f.created_at AS project_created_at,
+                f.created_by AS project_created_by,
+                f.updated_at AS project_updated_at,
+                f.updated_by AS project_updated_by
+            FROM documents d
+            LEFT JOIN folders f
+                   ON f.id = d.folder_id
+                  AND f.organization_id = d.organization_id
+            WHERE d.id = %s
+              AND d.organization_id = %s{lock_clause};
             """,
             (document_id, organization_id),
         )
         return cur.fetchone()
+
+    def _get_project_for_org(
+        self,
+        cur: psycopg.Cursor[Any],
+        organization_id: str,
+        project_id: str,
+        *,
+        for_update: bool = False,
+    ) -> dict[str, Any] | None:
+        lock_clause = " FOR UPDATE" if for_update else ""
+        cur.execute(
+            f"""
+            SELECT
+                f.id,
+                f.organization_id,
+                f.name,
+                f.description AS description,
+                f.created_at,
+                f.created_by,
+                f.updated_at,
+                f.updated_by,
+                (
+                    SELECT COUNT(*)::INT
+                    FROM documents d
+                    WHERE d.folder_id = f.id
+                      AND d.organization_id = f.organization_id
+                ) AS document_count
+            FROM folders f
+            WHERE f.id = %s
+              AND f.organization_id = %s{lock_clause};
+            """,
+            (project_id, organization_id),
+        )
+        return cur.fetchone()
+
+    def _assert_project_in_org(
+        self,
+        cur: psycopg.Cursor[Any],
+        *,
+        organization_id: str,
+        project_id: str,
+        for_update: bool = False,
+    ) -> dict[str, Any]:
+        row = self._get_project_for_org(
+            cur,
+            organization_id=organization_id,
+            project_id=project_id,
+            for_update=for_update,
+        )
+        if row is not None:
+            return row
+
+        cur.execute("SELECT organization_id FROM folders WHERE id = %s;", (project_id,))
+        existing = cur.fetchone()
+        if existing is None:
+            raise ProjectNotFoundError(f"Project {project_id} was not found.")
+        raise OrganizationMismatchError(
+            f"Project {project_id} belongs to organization {existing['organization_id']}, not {organization_id}."
+        )
 
     def _assert_document_in_org(
         self,
@@ -577,11 +650,40 @@ class DocumentStorageService:
             "document_id": row["id"],
             "organization_id": row["organization_id"],
             "title": row["title"],
+            "project_id": str(row["project_id"]) if row.get("project_id") is not None else None,
+            "project": (
+                {
+                    "project_id": str(row["project_id"]),
+                    "organization_id": row["organization_id"],
+                    "name": row.get("project_name"),
+                    "description": row.get("project_description"),
+                    "created_at": row.get("project_created_at"),
+                    "created_by": row.get("project_created_by"),
+                    "updated_at": row.get("project_updated_at"),
+                    "updated_by": row.get("project_updated_by"),
+                }
+                if row.get("project_id") is not None and row.get("project_name") is not None
+                else None
+            ),
             "created_at": row["created_at"],
             "created_by": row["created_by"],
             "updated_at": row["updated_at"],
             "current_version_id": row["current_version_id"],
             "my_role": my_role,
+        }
+
+    @staticmethod
+    def _map_project_row(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "project_id": str(row["id"]),
+            "organization_id": row["organization_id"],
+            "name": row["name"],
+            "description": row.get("description"),
+            "created_at": row["created_at"],
+            "created_by": row["created_by"],
+            "updated_at": row["updated_at"],
+            "updated_by": row["updated_by"],
+            "document_count": int(row.get("document_count") or 0),
         }
 
     @staticmethod
@@ -763,6 +865,7 @@ class DocumentStorageService:
         actor_user_id: str,
         markdown_bytes: bytes,
         document_id: str | None = None,
+        project_id: str | None = None,
         title: str | None = None,
         message: str | None = None,
     ) -> dict[str, Any]:
@@ -785,6 +888,13 @@ class DocumentStorageService:
                     )
 
                     if document_id is None:
+                        if not project_id:
+                            raise ValueError("project_id is required when creating a new document.")
+                        self._assert_project_in_org(
+                            cur,
+                            organization_id=organization_id,
+                            project_id=project_id,
+                        )
                         document_id = str(uuid.uuid4())
                         parent_version_id = None
                         version_no = 1
@@ -794,14 +904,15 @@ class DocumentStorageService:
                                 id,
                                 organization_id,
                                 title,
+                                folder_id,
                                 current_version_id,
                                 created_at,
                                 created_by,
                                 updated_at
                             )
-                            VALUES (%s, %s, %s, NULL, NOW(), %s, NOW());
+                            VALUES (%s, %s, %s, %s, NULL, NOW(), %s, NOW());
                             """,
-                            (document_id, organization_id, title, actor_user_id),
+                            (document_id, organization_id, title, project_id, actor_user_id),
                         )
                         self._upsert_document_membership(
                             cur,
@@ -821,6 +932,30 @@ class DocumentStorageService:
                             for_update=True,
                         )
                         parent_version_id = document_row["current_version_id"]
+                        active_project_id = (
+                            str(document_row["project_id"])
+                            if document_row.get("project_id") is not None
+                            else None
+                        )
+
+                        if project_id is not None:
+                            self._assert_project_in_org(
+                                cur,
+                                organization_id=organization_id,
+                                project_id=project_id,
+                            )
+                            if active_project_id != project_id:
+                                cur.execute(
+                                    """
+                                    UPDATE documents
+                                    SET folder_id = %s
+                                    WHERE id = %s
+                                      AND organization_id = %s;
+                                    """,
+                                    (project_id, document_id, organization_id),
+                                )
+                        else:
+                            project_id = active_project_id
 
                         if parent_version_id is None:
                             version_no = 1
@@ -898,6 +1033,7 @@ class DocumentStorageService:
 
                     audit_metadata = {
                         "document_id": document_id,
+                        "project_id": project_id,
                         "version_id": version_id,
                         "version_no": version_no,
                         "content_hash": content_hash,
@@ -938,6 +1074,7 @@ class DocumentStorageService:
 
         return {
             "document_id": document_id,
+            "project_id": project_id,
             "version_id": version_id,
             "version_no": version_no,
             "content_hash": content_hash,
@@ -1134,6 +1271,7 @@ class DocumentStorageService:
         actor_user_id: str,
         limit: int,
         offset: int,
+        project_id: str | None = None,
     ) -> list[dict[str, Any]]:
         with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
             with conn.cursor() as cur:
@@ -1142,17 +1280,29 @@ class DocumentStorageService:
                     organization_id=organization_id,
                     user_id=actor_user_id,
                 )
+                if project_id is not None:
+                    self._assert_project_in_org(
+                        cur,
+                        organization_id=organization_id,
+                        project_id=project_id,
+                    )
                 cur.execute(
                     """
                     SELECT
                         d.id AS document_id,
                         d.organization_id,
                         d.title,
-                        d.folder_id,
+                        d.folder_id AS project_id,
                         d.created_at AS document_created_at,
                         d.created_by AS document_created_by,
                         d.updated_at AS document_updated_at,
                         d.current_version_id,
+                        f.name AS project_name,
+                        f.description AS project_description,
+                        f.created_at AS project_created_at,
+                        f.created_by AS project_created_by,
+                        f.updated_at AS project_updated_at,
+                        f.updated_by AS project_updated_by,
                         v.id AS version_id,
                         v.version_no,
                         v.content_hash,
@@ -1175,13 +1325,26 @@ class DocumentStorageService:
                     LEFT JOIN document_versions v
                            ON v.id = d.current_version_id
                           AND v.organization_id = d.organization_id
+                    LEFT JOIN folders f
+                           ON f.id = d.folder_id
+                          AND f.organization_id = d.organization_id
                     WHERE d.organization_id = %s
                       AND (%s = 'owner' OR dm.user_id IS NOT NULL)
+                      AND (%s IS NULL OR d.folder_id = %s)
                     ORDER BY d.updated_at DESC
                     LIMIT %s
                     OFFSET %s;
                     """,
-                    (organization_role, actor_user_id, organization_id, organization_role, limit, offset),
+                    (
+                        organization_role,
+                        actor_user_id,
+                        organization_id,
+                        organization_role,
+                        project_id,
+                        project_id,
+                        limit,
+                        offset,
+                    ),
                 )
                 rows = cur.fetchall()
 
@@ -1209,7 +1372,21 @@ class DocumentStorageService:
                     "document_id": row["document_id"],
                     "organization_id": row["organization_id"],
                     "title": row["title"],
-                    "folder_id": row.get("folder_id"),
+                    "project_id": str(row["project_id"]) if row.get("project_id") is not None else None,
+                    "project": (
+                        {
+                            "project_id": str(row["project_id"]),
+                            "organization_id": row["organization_id"],
+                            "name": row.get("project_name"),
+                            "description": row.get("project_description"),
+                            "created_at": row.get("project_created_at"),
+                            "created_by": row.get("project_created_by"),
+                            "updated_at": row.get("project_updated_at"),
+                            "updated_by": row.get("project_updated_by"),
+                        }
+                        if row.get("project_id") is not None and row.get("project_name") is not None
+                        else None
+                    ),
                     "created_at": row["document_created_at"],
                     "created_by": row["document_created_by"],
                     "updated_at": row["document_updated_at"],
@@ -1713,6 +1890,280 @@ class DocumentStorageService:
                     )
                     if cur.rowcount == 0:
                         raise DocumentNotFoundError(f"Version {version_id} not found")
+
+    # ------------------------------------------------------------------
+    # Project management
+    # ------------------------------------------------------------------
+
+    def create_project(
+        self,
+        *,
+        organization_id: str,
+        name: str,
+        description: str | None,
+        actor_user_id: str,
+    ) -> dict[str, Any]:
+        project_name = name.strip()
+        if not project_name:
+            raise ValueError("Project name is required.")
+
+        project_description = description.strip() if description is not None else None
+        if project_description == "":
+            project_description = None
+
+        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    self._ensure_user_in_organization(
+                        cur, organization_id=organization_id, user_id=actor_user_id
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO folders (
+                            organization_id,
+                            name,
+                            description,
+                            created_by,
+                            updated_by
+                        )
+                        VALUES (%s, %s, %s, %s, %s)
+                        RETURNING
+                            id,
+                            organization_id,
+                            name,
+                            description,
+                            created_at,
+                            created_by,
+                            updated_at,
+                            updated_by,
+                            0 AS document_count;
+                        """,
+                        (
+                            organization_id,
+                            project_name,
+                            project_description,
+                            actor_user_id,
+                            actor_user_id,
+                        ),
+                    )
+                    row = cur.fetchone()
+
+        if row is None:
+            raise DocumentStorageError("Project creation failed.")
+        return self._map_project_row(row)
+
+    def list_projects(
+        self,
+        *,
+        organization_id: str,
+        actor_user_id: str,
+    ) -> list[dict[str, Any]]:
+        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                self._ensure_user_in_organization(
+                    cur, organization_id=organization_id, user_id=actor_user_id
+                )
+                cur.execute(
+                    """
+                    SELECT
+                        f.id,
+                        f.organization_id,
+                        f.name,
+                        f.description AS description,
+                        f.created_at,
+                        f.created_by,
+                        f.updated_at,
+                        f.updated_by,
+                        COUNT(d.id)::INT AS document_count
+                    FROM folders f
+                    LEFT JOIN documents d
+                           ON d.folder_id = f.id
+                          AND d.organization_id = f.organization_id
+                    WHERE f.organization_id = %s
+                    GROUP BY
+                        f.id,
+                        f.organization_id,
+                        f.name,
+                        f.description,
+                        f.created_at,
+                        f.created_by,
+                        f.updated_at,
+                        f.updated_by
+                    ORDER BY f.updated_at DESC, f.name ASC;
+                    """,
+                    (organization_id,),
+                )
+                rows = cur.fetchall()
+
+        return [self._map_project_row(row) for row in rows]
+
+    def get_project(
+        self,
+        *,
+        organization_id: str,
+        project_id: str,
+        actor_user_id: str,
+    ) -> dict[str, Any]:
+        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                self._ensure_user_in_organization(
+                    cur, organization_id=organization_id, user_id=actor_user_id
+                )
+                row = self._assert_project_in_org(
+                    cur,
+                    organization_id=organization_id,
+                    project_id=project_id,
+                )
+
+        return self._map_project_row(row)
+
+    def update_project(
+        self,
+        *,
+        organization_id: str,
+        project_id: str,
+        actor_user_id: str,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        if name is None and description is None:
+            raise ValueError("At least one project field must be provided.")
+
+        project_name = name.strip() if name is not None else None
+        if project_name == "":
+            raise ValueError("Project name cannot be empty.")
+
+        project_description = description.strip() if description is not None else None
+        if description is not None and project_description == "":
+            project_description = None
+
+        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    self._ensure_user_in_organization(
+                        cur, organization_id=organization_id, user_id=actor_user_id
+                    )
+                    self._assert_project_in_org(
+                        cur,
+                        organization_id=organization_id,
+                        project_id=project_id,
+                        for_update=True,
+                    )
+                    cur.execute(
+                        """
+                        UPDATE folders
+                        SET name = COALESCE(%s, name),
+                            description = CASE
+                                WHEN %s THEN %s
+                                ELSE description
+                            END,
+                            updated_at = NOW(),
+                            updated_by = %s
+                        WHERE id = %s
+                          AND organization_id = %s
+                        RETURNING
+                            id,
+                            organization_id,
+                            name,
+                            description,
+                            created_at,
+                            created_by,
+                            updated_at,
+                            updated_by,
+                            (
+                                SELECT COUNT(*)::INT
+                                FROM documents d
+                                WHERE d.folder_id = folders.id
+                                  AND d.organization_id = folders.organization_id
+                            ) AS document_count;
+                        """,
+                        (
+                            project_name,
+                            description is not None,
+                            project_description,
+                            actor_user_id,
+                            project_id,
+                            organization_id,
+                        ),
+                    )
+                    row = cur.fetchone()
+
+        if row is None:
+            raise ProjectNotFoundError(f"Project {project_id} was not found.")
+        return self._map_project_row(row)
+
+    def delete_project(
+        self,
+        *,
+        organization_id: str,
+        project_id: str,
+        actor_user_id: str,
+    ) -> None:
+        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    self._ensure_user_in_organization(
+                        cur, organization_id=organization_id, user_id=actor_user_id
+                    )
+                    project_row = self._assert_project_in_org(
+                        cur,
+                        organization_id=organization_id,
+                        project_id=project_id,
+                        for_update=True,
+                    )
+                    if int(project_row.get("document_count") or 0) > 0:
+                        raise DocumentOperationConflictError(
+                            f"Project {project_id} cannot be deleted while documents are still assigned to it."
+                        )
+                    cur.execute(
+                        """
+                        DELETE FROM folders
+                        WHERE id = %s
+                          AND organization_id = %s;
+                        """,
+                        (project_id, organization_id),
+                    )
+                    if cur.rowcount == 0:
+                        raise ProjectNotFoundError(f"Project {project_id} was not found.")
+
+    def move_document_to_project(
+        self,
+        *,
+        document_id: str,
+        organization_id: str,
+        project_id: str,
+        actor_user_id: str,
+    ) -> None:
+        if not project_id.strip():
+            raise ValueError("project_id is required.")
+
+        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    self._assert_document_access(
+                        cur,
+                        organization_id=organization_id,
+                        document_id=document_id,
+                        user_id=actor_user_id,
+                        allowed_roles=DOCUMENT_WRITE_ROLES,
+                    )
+                    self._assert_project_in_org(
+                        cur,
+                        organization_id=organization_id,
+                        project_id=project_id,
+                    )
+                    cur.execute(
+                        """
+                        UPDATE documents
+                        SET folder_id = %s,
+                            updated_at = NOW()
+                        WHERE id = %s
+                          AND organization_id = %s;
+                        """,
+                        (project_id, document_id, organization_id),
+                    )
+                    if cur.rowcount == 0:
+                        raise DocumentNotFoundError(f"Document {document_id} not found")
 
     # ------------------------------------------------------------------
     # Folder management

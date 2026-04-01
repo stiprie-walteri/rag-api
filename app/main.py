@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.auth import ClerkAuthMiddleware
 from app.api.dependencies import docstore_service
-from app.api.routes import documents, folders, legislation, user
+from app.api.routes import documents, legislation, projects, user
 
 load_dotenv()
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -38,7 +38,7 @@ def initialize_docstore() -> None:
 app.include_router(user.router)
 app.include_router(legislation.router)
 app.include_router(documents.router)
-app.include_router(folders.router)
+app.include_router(projects.router)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

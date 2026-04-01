@@ -15,6 +15,7 @@ from app.services.storage.service import (
     DocumentAccessDeniedError,
     DocumentVersionNotFoundError,
     DocumentHasNoVersionsError,
+    ProjectNotFoundError,
 )
 from app.services.pdf.chunking import chunk_pdf
 from app.services.pdf.converter import convert_pdf_to_markdown
@@ -26,10 +27,22 @@ router = APIRouter(tags=["Documents"])
 
 class UploadDocumentResponse(BaseModel):
     organization_id: str
+    project_id: str | None = None
     document_id: str
     version_id: str
     version_no: int
     content_hash: str
+
+
+class ProjectSummary(BaseModel):
+    project_id: str
+    organization_id: str
+    name: str
+    description: str | None = None
+    created_at: datetime
+    created_by: str
+    updated_at: datetime
+    updated_by: str
 
 
 class DocumentVersionMetadata(BaseModel):
@@ -51,7 +64,8 @@ class DocumentMetadata(BaseModel):
     document_id: str
     organization_id: str
     title: str | None = None
-    folder_id: str | None = None
+    project_id: str | None = None
+    project: ProjectSummary | None = None
     created_at: datetime
     created_by: str
     updated_at: datetime
@@ -145,11 +159,19 @@ def _to_version_metadata(raw: dict) -> DocumentVersionMetadata:
     return DocumentVersionMetadata(**raw)
 
 
+def _to_project_summary(raw: dict | None) -> ProjectSummary | None:
+    if raw is None:
+        return None
+    return ProjectSummary(**raw)
+
+
 def _to_document_metadata(raw: dict) -> DocumentMetadata:
     return DocumentMetadata(
         document_id=raw["document_id"],
         organization_id=raw["organization_id"],
         title=raw.get("title"),
+        project_id=raw.get("project_id"),
+        project=_to_project_summary(raw.get("project")),
         created_at=raw["created_at"],
         created_by=raw["created_by"],
         updated_at=raw["updated_at"],
@@ -163,6 +185,8 @@ def _to_document_list_item(raw: dict) -> DocumentListItem:
         document_id=raw["document_id"],
         organization_id=raw["organization_id"],
         title=raw.get("title"),
+        project_id=raw.get("project_id"),
+        project=_to_project_summary(raw.get("project")),
         created_at=raw["created_at"],
         created_by=raw["created_by"],
         updated_at=raw["updated_at"],
@@ -176,6 +200,7 @@ async def upload_document(
     organization_id: str | None = Form(default=None),
     file: UploadFile = File(...),
     document_id: str | None = Form(default=None),
+    project_id: str | None = Form(default=None),
     title: str | None = Form(default=None),
     message: str | None = Form(default=None),
     auth: AuthContext = Depends(get_auth_context),
@@ -226,10 +251,13 @@ async def upload_document(
             actor_user_id=auth.user_id,
             markdown_bytes=markdown_bytes,
             document_id=document_id,
+            project_id=project_id,
             title=title,
             message=message,
         )
     except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProjectNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except OrganizationMismatchError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -253,6 +281,7 @@ async def upload_document(
 
     return UploadDocumentResponse(
         organization_id=org_context["organization_id"],
+        project_id=result.get("project_id"),
         document_id=result["document_id"],
         version_id=result["version_id"],
         version_no=result["version_no"],
@@ -265,6 +294,7 @@ async def list_documents(
     organization_id: str,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    project_id: str | None = Query(default=None),
     auth: AuthContext = Depends(get_auth_context),
 ):
     service = require_docstore()
@@ -280,8 +310,13 @@ async def list_documents(
             actor_user_id=auth.user_id,
             limit=limit,
             offset=offset,
+            project_id=project_id,
         )
     except DocumentAccessDeniedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OrganizationMismatchError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     items = [_to_document_list_item(item) for item in items_raw]
     next_offset = offset + len(items) if len(items) == limit else None
