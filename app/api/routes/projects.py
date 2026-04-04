@@ -50,11 +50,11 @@ async def create_project(
     auth: AuthContext = Depends(get_auth_context),
 ):
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service, auth, requested_organization_id=organization_id, create_if_missing=False
     )
     try:
-        row = service.create_project(
+        row = await service.create_project(
             organization_id=org_context["organization_id"],
             name=body.name,
             description=body.description,
@@ -72,10 +72,10 @@ async def list_projects(
     auth: AuthContext = Depends(get_auth_context),
 ):
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service, auth, requested_organization_id=organization_id, create_if_missing=False
     )
-    rows = service.list_projects(
+    rows = await service.list_projects(
         organization_id=org_context["organization_id"],
         actor_user_id=auth.user_id,
     )
@@ -89,11 +89,11 @@ async def get_project(
     auth: AuthContext = Depends(get_auth_context),
 ):
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service, auth, requested_organization_id=organization_id, create_if_missing=False
     )
     try:
-        row = service.get_project(
+        row = await service.get_project(
             organization_id=org_context["organization_id"],
             project_id=project_id,
             actor_user_id=auth.user_id,
@@ -114,11 +114,11 @@ async def update_project(
     auth: AuthContext = Depends(get_auth_context),
 ):
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service, auth, requested_organization_id=organization_id, create_if_missing=False
     )
     try:
-        row = service.update_project(
+        row = await service.update_project(
             organization_id=org_context["organization_id"],
             project_id=project_id,
             actor_user_id=auth.user_id,
@@ -142,11 +142,11 @@ async def delete_project(
     auth: AuthContext = Depends(get_auth_context),
 ):
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service, auth, requested_organization_id=organization_id, create_if_missing=False
     )
     try:
-        service.delete_project(
+        await service.delete_project(
             organization_id=org_context["organization_id"],
             project_id=project_id,
             actor_user_id=auth.user_id,
@@ -171,11 +171,11 @@ async def list_project_documents(
     auth: AuthContext = Depends(get_auth_context),
 ):
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service, auth, requested_organization_id=organization_id, create_if_missing=False
     )
     try:
-        items_raw = service.list_documents(
+        items_raw = await service.list_documents(
             organization_id=org_context["organization_id"],
             actor_user_id=auth.user_id,
             limit=limit,
@@ -202,11 +202,11 @@ async def move_document_to_project(
     auth: AuthContext = Depends(get_auth_context),
 ):
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service, auth, requested_organization_id=organization_id, create_if_missing=False
     )
     try:
-        service.move_document_to_project(
+        await service.move_document_to_project(
             document_id=document_id,
             organization_id=org_context["organization_id"],
             project_id=body.project_id,

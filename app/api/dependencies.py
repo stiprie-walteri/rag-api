@@ -26,7 +26,7 @@ def require_docstore() -> DocumentStorageService:
         )
     return docstore_service
 
-def sync_authenticated_org(
+async def sync_authenticated_org(
     service: DocumentStorageService,
     auth: AuthContext,
     *,
@@ -34,7 +34,7 @@ def sync_authenticated_org(
     create_if_missing: bool,
 ) -> dict:
     try:
-        context = service.sync_authenticated_user(
+        context = await service.sync_authenticated_user(
             clerk_user_id=auth.user_id,
             clerk_org_id=auth.clerk_org_id,
             clerk_org_slug=auth.clerk_org_slug,

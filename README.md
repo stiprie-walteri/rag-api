@@ -1,5 +1,23 @@
 # Aviation MOE Compliance Checker + Persistent Document Store
 
+## How to run locally!!!
+Copy .env.example to .env
+
+Ask Jēkabs or check Portainer for these variables:
+```
+OPENROUTER_API_KEY=...
+OPENROUTER_MODEL=... # This one can be taken from OpenRouter website, please select a free model
+CLERK_SECRET_KEY=...
+CLERK_FRONTEND_API_URL=...
+```
+
+Open docker desktop and run 
+```
+ docker compose up --build -d
+```
+
+To call some routes please run the trafficom-portal AKA frontend locally.
+
 ## What it does
 - Upload and process MOE PDFs for legislation checks.
 - Persist uploaded Markdown documents with organization scoping.

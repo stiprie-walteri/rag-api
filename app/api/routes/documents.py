@@ -206,7 +206,7 @@ async def upload_document(
     auth: AuthContext = Depends(get_auth_context),
 ):
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service,
         auth,
         requested_organization_id=organization_id,
@@ -246,7 +246,7 @@ async def upload_document(
         markdown_bytes = raw_bytes
 
     try:
-        result = service.create_version(
+        result = await service.create_version(
             organization_id=org_context["organization_id"],
             actor_user_id=auth.user_id,
             markdown_bytes=markdown_bytes,
@@ -270,7 +270,7 @@ async def upload_document(
 
     if chunks:
         try:
-            service.save_document_chunks(
+            await service.save_document_chunks(
                 organization_id=org_context["organization_id"],
                 document_id=result["document_id"],
                 version_id=result["version_id"],
@@ -298,14 +298,14 @@ async def list_documents(
     auth: AuthContext = Depends(get_auth_context),
 ):
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service,
         auth,
         requested_organization_id=organization_id,
         create_if_missing=False,
     )
     try:
-        items_raw = service.list_documents(
+        items_raw = await service.list_documents(
             organization_id=org_context["organization_id"],
             actor_user_id=auth.user_id,
             limit=limit,
@@ -330,14 +330,14 @@ async def get_document_current(
     auth: AuthContext = Depends(get_auth_context),
 ):
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service,
         auth,
         requested_organization_id=organization_id,
         create_if_missing=False,
     )
     try:
-        result = service.get_document_current(
+        result = await service.get_document_current(
             organization_id=org_context["organization_id"],
             document_id=document_id,
             actor_user_id=auth.user_id,
@@ -372,14 +372,14 @@ async def get_document_version(
         raise HTTPException(status_code=400, detail="version_no must be greater than 0.")
 
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service,
         auth,
         requested_organization_id=organization_id,
         create_if_missing=False,
     )
     try:
-        result = service.get_document_version(
+        result = await service.get_document_version(
             organization_id=org_context["organization_id"],
             document_id=document_id,
             version_no=version_no,
@@ -410,14 +410,14 @@ async def list_document_versions(
     auth: AuthContext = Depends(get_auth_context),
 ):
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service,
         auth,
         requested_organization_id=organization_id,
         create_if_missing=False,
     )
     try:
-        items_raw = service.list_versions(
+        items_raw = await service.list_versions(
             organization_id=org_context["organization_id"],
             document_id=document_id,
             actor_user_id=auth.user_id,
@@ -459,7 +459,7 @@ async def get_document_version_chunks(
         raise HTTPException(status_code=400, detail="version_no must be greater than 0.")
 
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service,
         auth,
         requested_organization_id=organization_id,
@@ -467,7 +467,7 @@ async def get_document_version_chunks(
     )
 
     try:
-        result = service.get_document_version(
+        result = await service.get_document_version(
             organization_id=org_context["organization_id"],
             document_id=document_id,
             version_no=version_no,
@@ -485,7 +485,7 @@ async def get_document_version_chunks(
     version_id = result["version"]["version_id"]
 
     try:
-        chunks_raw = service.get_document_chunks(
+        chunks_raw = await service.get_document_chunks(
             organization_id=org_context["organization_id"],
             document_id=document_id,
             version_id=version_id,
@@ -549,7 +549,7 @@ async def evaluate_document_tasks(
         raise HTTPException(status_code=400, detail="No tasks provided and no template tasks found.")
 
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service,
         auth,
         requested_organization_id=organization_id,
@@ -557,7 +557,7 @@ async def evaluate_document_tasks(
     )
 
     try:
-        ver_result = service.get_document_version(
+        ver_result = await service.get_document_version(
             organization_id=org_context["organization_id"],
             document_id=document_id,
             version_no=version_no,
@@ -575,7 +575,7 @@ async def evaluate_document_tasks(
     version_id = ver_result["version"]["version_id"]
 
     try:
-        chunks_raw = service.get_document_chunks(
+        chunks_raw = await service.get_document_chunks(
             organization_id=org_context["organization_id"],
             document_id=document_id,
             version_id=version_id,
@@ -585,12 +585,10 @@ async def evaluate_document_tasks(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     results = []
-    # For a real scalable system these could be evaluated concurrently,
-    # but sequential processing is sufficient to demonstrate the OpenRouter agent feature.
     for task_list in tasks_to_run:
-        result = evaluate_task_with_agent(
-            task_list=task_list, 
-            chunks=chunks_raw, 
+        result = await evaluate_task_with_agent(
+            task_list=task_list,
+            chunks=chunks_raw,
             system_prompt_override=system_prompt_override
         )
         results.append(result)
@@ -622,7 +620,7 @@ async def delete_document(
     auth: AuthContext = Depends(get_auth_context),
 ):
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service,
         auth,
         requested_organization_id=organization_id,
@@ -630,7 +628,7 @@ async def delete_document(
     )
 
     try:
-        result = service.delete_document(
+        result = await service.delete_document(
             organization_id=org_context["organization_id"],
             document_id=document_id,
             actor_user_id=auth.user_id,
@@ -661,7 +659,7 @@ async def save_compliance_result(
     auth: AuthContext = Depends(get_auth_context),
 ):
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service,
         auth,
         requested_organization_id=organization_id,
@@ -669,13 +667,13 @@ async def save_compliance_result(
     )
 
     try:
-        result = service.get_document_version(
+        result = await service.get_document_version(
             organization_id=org_context["organization_id"],
             document_id=document_id,
             version_no=version_no,
             actor_user_id=auth.user_id,
         )
-        service.save_compliance_result(
+        await service.save_compliance_result(
             organization_id=org_context["organization_id"],
             version_id=result["version"]["version_id"],
             result=body.result,
@@ -694,5 +692,5 @@ async def run_docstore_gc(
     max_delete: int = Query(default=100, ge=1, le=5000),
 ):
     service = require_docstore()
-    result = service.gc_unreferenced_objects(dry_run=dry_run, max_delete=max_delete)
+    result = await service.gc_unreferenced_objects(dry_run=dry_run, max_delete=max_delete)
     return DocstoreGcResponse(**result)

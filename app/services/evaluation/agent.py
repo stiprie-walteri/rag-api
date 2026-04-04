@@ -3,7 +3,7 @@ import json
 import logging
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
-from openai import OpenAI
+from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -14,13 +14,13 @@ OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o")
 AGENT_MAX_TOOL_CALLS = int(os.getenv("AGENT_MAX_TOOL_CALLS", "25"))
 
 # Ensure client is only initialized if key is present to prevent startup crashes when unused
-_client: Optional[OpenAI] = None
-def get_openrouter_client() -> OpenAI:
+_client: Optional[AsyncOpenAI] = None
+def get_openrouter_client() -> AsyncOpenAI:
     global _client
     if not _client:
         if not OPENROUTER_API_KEY:
             raise ValueError("OPENROUTER_API_KEY is not set.")
-        _client = OpenAI(
+        _client = AsyncOpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=OPENROUTER_API_KEY,
         )
@@ -42,8 +42,8 @@ def _format_toc(chunks: List[Dict[str, Any]]) -> str:
         toc_lines.append(f"{level_prefix}{i}: {title} (Pages {c.get('start_page', '?')}-{c.get('end_page', '?')})")
     return "\n".join(toc_lines)
 
-def evaluate_task_with_agent(
-    task_list: List[str], 
+async def evaluate_task_with_agent(
+    task_list: List[str],
     chunks: List[Dict[str, Any]],
     system_prompt_override: Optional[str] = None
 ) -> TaskEvaluationResult:
@@ -139,7 +139,7 @@ Guidance:
     ]
 
     for attempt in range(AGENT_MAX_TOOL_CALLS):
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model=OPENROUTER_MODEL,
             messages=messages,
             tools=tools,

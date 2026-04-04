@@ -29,7 +29,7 @@ async def health_check():
 @router.get("/api/me", response_model=MeResponse)
 async def me(auth: AuthContext = Depends(get_auth_context)):
     service = require_docstore()
-    context = sync_authenticated_org(service, auth, create_if_missing=True)
+    context = await sync_authenticated_org(service, auth, create_if_missing=True)
     return MeResponse(
         user_id=auth.user_id,
         clerk_org_id=context["clerk_org_id"],

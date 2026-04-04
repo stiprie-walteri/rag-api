@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import io
 import logging
@@ -139,6 +140,10 @@ class DocumentStorageService:
     def compute_hash(payload: bytes) -> str:
         return hashlib.sha256(payload).hexdigest()
 
+    # ------------------------------------------------------------------
+    # Startup helpers — remain synchronous (called once at app startup)
+    # ------------------------------------------------------------------
+
     def run_migrations(self) -> None:
         migrations_dir = self.settings.migrations_dir
         if not migrations_dir.exists():
@@ -186,41 +191,54 @@ class DocumentStorageService:
         self.run_migrations()
         self.ensure_bucket()
 
-    def minio_put_if_missing(self, bucket: str, key: str, payload: bytes) -> bool:
-        try:
-            self.minio_client.stat_object(bucket, key)
-            return False
-        except S3Error as exc:
-            if exc.code not in {"NoSuchKey", "NoSuchObject"}:
-                raise
+    # ------------------------------------------------------------------
+    # MinIO helpers — sync MinIO SDK wrapped in asyncio.to_thread
+    # ------------------------------------------------------------------
 
-        self.minio_client.put_object(
-            bucket_name=bucket,
-            object_name=key,
-            data=io.BytesIO(payload),
-            length=len(payload),
-            content_type="text/markdown; charset=utf-8",
-        )
-        return True
+    async def minio_put_if_missing(self, bucket: str, key: str, payload: bytes) -> bool:
+        def _put() -> bool:
+            try:
+                self.minio_client.stat_object(bucket, key)
+                return False
+            except S3Error as exc:
+                if exc.code not in {"NoSuchKey", "NoSuchObject"}:
+                    raise
+            self.minio_client.put_object(
+                bucket_name=bucket,
+                object_name=key,
+                data=io.BytesIO(payload),
+                length=len(payload),
+                content_type="text/markdown; charset=utf-8",
+            )
+            return True
 
-    def minio_get(self, bucket: str, key: str) -> bytes:
-        response = self.minio_client.get_object(bucket_name=bucket, object_name=key)
-        try:
-            return response.read()
-        finally:
-            response.close()
-            response.release_conn()
+        return await asyncio.to_thread(_put)
 
-    def _ensure_user(
+    async def minio_get(self, bucket: str, key: str) -> bytes:
+        def _get() -> bytes:
+            response = self.minio_client.get_object(bucket_name=bucket, object_name=key)
+            try:
+                return response.read()
+            finally:
+                response.close()
+                response.release_conn()
+
+        return await asyncio.to_thread(_get)
+
+    # ------------------------------------------------------------------
+    # Cursor-level helpers — async, reuse an existing AsyncCursor
+    # ------------------------------------------------------------------
+
+    async def _ensure_user(
         self,
-        cur: psycopg.Cursor[Any],
+        cur: psycopg.AsyncCursor[Any],
         *,
         user_id: str,
         primary_email: str | None = None,
         first_name: str | None = None,
         last_name: str | None = None,
     ) -> None:
-        cur.execute(
+        await cur.execute(
             """
             INSERT INTO users (
                 id,
@@ -242,12 +260,12 @@ class DocumentStorageService:
             (user_id, primary_email, first_name, last_name),
         )
 
-    def _get_organization_by_id(
+    async def _get_organization_by_id(
         self,
-        cur: psycopg.Cursor[Any],
+        cur: psycopg.AsyncCursor[Any],
         organization_id: str,
     ) -> dict[str, Any] | None:
-        cur.execute(
+        await cur.execute(
             """
             SELECT id, clerk_org_id, clerk_org_slug, name, created_at
             FROM organizations
@@ -255,14 +273,14 @@ class DocumentStorageService:
             """,
             (organization_id,),
         )
-        return cur.fetchone()
+        return await cur.fetchone()
 
-    def _get_organization_by_clerk_org_id(
+    async def _get_organization_by_clerk_org_id(
         self,
-        cur: psycopg.Cursor[Any],
+        cur: psycopg.AsyncCursor[Any],
         clerk_org_id: str | None = None,
     ) -> dict[str, Any] | None:
-        cur.execute(
+        await cur.execute(
             """
             SELECT id, clerk_org_id, clerk_org_slug, name, created_at
             FROM organizations
@@ -270,11 +288,11 @@ class DocumentStorageService:
             """,
             (clerk_org_id,),
         )
-        return cur.fetchone()
+        return await cur.fetchone()
 
-    def _upsert_organization_membership(
+    async def _upsert_organization_membership(
         self,
-        cur: psycopg.Cursor[Any],
+        cur: psycopg.AsyncCursor[Any],
         *,
         organization_id: str,
         user_id: str,
@@ -286,7 +304,7 @@ class DocumentStorageService:
             raise ValueError(f"Unsupported organization role: {role}")
 
         if overwrite_role:
-            cur.execute(
+            await cur.execute(
                 """
                 INSERT INTO organization_memberships (
                     organization_id,
@@ -307,7 +325,7 @@ class DocumentStorageService:
             )
             return
 
-        cur.execute(
+        await cur.execute(
             """
             INSERT INTO organization_memberships (
                 organization_id,
@@ -330,14 +348,14 @@ class DocumentStorageService:
             (organization_id, user_id, role, actor_user_id, actor_user_id),
         )
 
-    def _get_organization_membership_role(
+    async def _get_organization_membership_role(
         self,
-        cur: psycopg.Cursor[Any],
+        cur: psycopg.AsyncCursor[Any],
         *,
         organization_id: str,
         user_id: str,
     ) -> str | None:
-        cur.execute(
+        await cur.execute(
             """
             SELECT role
             FROM organization_memberships
@@ -346,12 +364,12 @@ class DocumentStorageService:
             """,
             (organization_id, user_id),
         )
-        row = cur.fetchone()
+        row = await cur.fetchone()
         return row["role"] if row else None
 
-    def _ensure_user_in_organization(
+    async def _ensure_user_in_organization(
         self,
-        cur: psycopg.Cursor[Any],
+        cur: psycopg.AsyncCursor[Any],
         *,
         organization_id: str,
         user_id: str,
@@ -360,16 +378,16 @@ class DocumentStorageService:
         if not REQUIRE_ORG_VALIDATION:
             return "owner"
 
-        role = self._get_organization_membership_role(cur, organization_id=organization_id, user_id=user_id)
+        role = await self._get_organization_membership_role(cur, organization_id=organization_id, user_id=user_id)
         if role is None:
             raise DocumentAccessDeniedError(
                 f"User {user_id} is not a member of organization {organization_id}."
             )
         return role
 
-    def _upsert_document_membership(
+    async def _upsert_document_membership(
         self,
-        cur: psycopg.Cursor[Any],
+        cur: psycopg.AsyncCursor[Any],
         *,
         organization_id: str,
         document_id: str,
@@ -380,7 +398,7 @@ class DocumentStorageService:
         if role not in DOCUMENT_MEMBER_ROLES:
             raise ValueError(f"Unsupported document role: {role}")
 
-        cur.execute(
+        await cur.execute(
             """
             INSERT INTO document_memberships (
                 organization_id,
@@ -399,15 +417,15 @@ class DocumentStorageService:
             (organization_id, document_id, user_id, role, actor_user_id),
         )
 
-    def _get_document_membership_role(
+    async def _get_document_membership_role(
         self,
-        cur: psycopg.Cursor[Any],
+        cur: psycopg.AsyncCursor[Any],
         *,
         organization_id: str,
         document_id: str,
         user_id: str,
     ) -> str | None:
-        cur.execute(
+        await cur.execute(
             """
             SELECT role
             FROM document_memberships
@@ -417,17 +435,17 @@ class DocumentStorageService:
             """,
             (organization_id, document_id, user_id),
         )
-        row = cur.fetchone()
+        row = await cur.fetchone()
         return row["role"] if row else None
 
-    def _count_document_owners(
+    async def _count_document_owners(
         self,
-        cur: psycopg.Cursor[Any],
+        cur: psycopg.AsyncCursor[Any],
         *,
         organization_id: str,
         document_id: str,
     ) -> int:
-        cur.execute(
+        await cur.execute(
             """
             SELECT COUNT(*) AS owner_count
             FROM document_memberships
@@ -437,12 +455,12 @@ class DocumentStorageService:
             """,
             (organization_id, document_id),
         )
-        row = cur.fetchone()
+        row = await cur.fetchone()
         return int(row["owner_count"]) if row else 0
 
-    def _write_audit(
+    async def _write_audit(
         self,
-        cur: psycopg.Cursor[Any],
+        cur: psycopg.AsyncCursor[Any],
         *,
         organization_id: str,
         actor_user_id: str,
@@ -451,7 +469,7 @@ class DocumentStorageService:
         object_id: str,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        cur.execute(
+        await cur.execute(
             """
             INSERT INTO audit_log (
                 organization_id,
@@ -474,16 +492,16 @@ class DocumentStorageService:
             ),
         )
 
-    def _get_document_for_org(
+    async def _get_document_for_org(
         self,
-        cur: psycopg.Cursor[Any],
+        cur: psycopg.AsyncCursor[Any],
         organization_id: str,
         document_id: str,
         *,
         for_update: bool = False,
     ) -> dict[str, Any] | None:
         lock_clause = " FOR UPDATE" if for_update else ""
-        cur.execute(
+        await cur.execute(
             f"""
             SELECT
                 d.id,
@@ -509,18 +527,18 @@ class DocumentStorageService:
             """,
             (document_id, organization_id),
         )
-        return cur.fetchone()
+        return await cur.fetchone()
 
-    def _get_project_for_org(
+    async def _get_project_for_org(
         self,
-        cur: psycopg.Cursor[Any],
+        cur: psycopg.AsyncCursor[Any],
         organization_id: str,
         project_id: str,
         *,
         for_update: bool = False,
     ) -> dict[str, Any] | None:
         lock_clause = " FOR UPDATE" if for_update else ""
-        cur.execute(
+        await cur.execute(
             f"""
             SELECT
                 f.id,
@@ -543,17 +561,17 @@ class DocumentStorageService:
             """,
             (project_id, organization_id),
         )
-        return cur.fetchone()
+        return await cur.fetchone()
 
-    def _assert_project_in_org(
+    async def _assert_project_in_org(
         self,
-        cur: psycopg.Cursor[Any],
+        cur: psycopg.AsyncCursor[Any],
         *,
         organization_id: str,
         project_id: str,
         for_update: bool = False,
     ) -> dict[str, Any]:
-        row = self._get_project_for_org(
+        row = await self._get_project_for_org(
             cur,
             organization_id=organization_id,
             project_id=project_id,
@@ -562,23 +580,23 @@ class DocumentStorageService:
         if row is not None:
             return row
 
-        cur.execute("SELECT organization_id FROM folders WHERE id = %s;", (project_id,))
-        existing = cur.fetchone()
+        await cur.execute("SELECT organization_id FROM folders WHERE id = %s;", (project_id,))
+        existing = await cur.fetchone()
         if existing is None:
             raise ProjectNotFoundError(f"Project {project_id} was not found.")
         raise OrganizationMismatchError(
             f"Project {project_id} belongs to organization {existing['organization_id']}, not {organization_id}."
         )
 
-    def _assert_document_in_org(
+    async def _assert_document_in_org(
         self,
-        cur: psycopg.Cursor[Any],
+        cur: psycopg.AsyncCursor[Any],
         *,
         organization_id: str,
         document_id: str,
         for_update: bool = False,
     ) -> dict[str, Any]:
-        row = self._get_document_for_org(
+        row = await self._get_document_for_org(
             cur,
             organization_id=organization_id,
             document_id=document_id,
@@ -587,17 +605,17 @@ class DocumentStorageService:
         if row is not None:
             return row
 
-        cur.execute("SELECT organization_id FROM documents WHERE id = %s;", (document_id,))
-        existing = cur.fetchone()
+        await cur.execute("SELECT organization_id FROM documents WHERE id = %s;", (document_id,))
+        existing = await cur.fetchone()
         if existing is None:
             raise DocumentNotFoundError(f"Document {document_id} was not found.")
         raise OrganizationMismatchError(
             f"Document {document_id} belongs to organization {existing['organization_id']}, not {organization_id}."
         )
 
-    def _assert_document_access(
+    async def _assert_document_access(
         self,
-        cur: psycopg.Cursor[Any],
+        cur: psycopg.AsyncCursor[Any],
         *,
         organization_id: str,
         document_id: str,
@@ -605,24 +623,21 @@ class DocumentStorageService:
         allowed_roles: set[str],
         for_update: bool = False,
     ) -> tuple[dict[str, Any], str]:
-        organization_role = self._ensure_user_in_organization(
+        organization_role = await self._ensure_user_in_organization(
             cur,
             organization_id=organization_id,
             user_id=user_id,
         )
-        
+
         REQUIRE_ORG_VALIDATION = os.getenv("REQUIRE_ORG_VALIDATION", "true").strip().lower() in {"1", "true", "yes", "on"}
         if not REQUIRE_ORG_VALIDATION:
-            # When validation is off, return a mock document row and 'owner' role.
-            # Downstream logic that uses this document row usually gets document properties,
-            # but since validation is off, let's gracefully fall back to a dummy row or fetch the row without asserting org match.
-            cur.execute("SELECT * FROM documents WHERE id = %s;", (document_id,))
-            doc_row = cur.fetchone()
+            await cur.execute("SELECT * FROM documents WHERE id = %s;", (document_id,))
+            doc_row = await cur.fetchone()
             if doc_row is None:
                 raise DocumentNotFoundError(f"Document {document_id} was not found.")
             return doc_row, "owner"
 
-        document_row = self._assert_document_in_org(
+        document_row = await self._assert_document_in_org(
             cur,
             organization_id=organization_id,
             document_id=document_id,
@@ -632,7 +647,7 @@ class DocumentStorageService:
         if organization_role == "owner":
             return document_row, "owner"
 
-        document_role = self._get_document_membership_role(
+        document_role = await self._get_document_membership_role(
             cur,
             organization_id=organization_id,
             document_id=document_id,
@@ -715,7 +730,11 @@ class DocumentStorageService:
             "assigned_by": row["assigned_by"],
         }
 
-    def sync_authenticated_user(
+    # ------------------------------------------------------------------
+    # Public async methods
+    # ------------------------------------------------------------------
+
+    async def sync_authenticated_user(
         self,
         *,
         clerk_user_id: str,
@@ -735,10 +754,10 @@ class DocumentStorageService:
         local_org_role = "owner"
         organization_name = primary_email or "Personal workspace"
 
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.transaction():
-                with conn.cursor() as cur:
-                    self._ensure_user(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await self._ensure_user(
                         cur,
                         user_id=clerk_user_id,
                         primary_email=primary_email,
@@ -747,13 +766,12 @@ class DocumentStorageService:
                     )
 
                     organization_row = None
-                    existing_private_org_row = self._get_organization_by_clerk_org_id(cur, private_org_key)
-                    
+                    existing_private_org_row = await self._get_organization_by_clerk_org_id(cur, private_org_key)
+
                     REQUIRE_ORG_VALIDATION = os.getenv("REQUIRE_ORG_VALIDATION", "true").strip().lower() in {"1", "true", "yes", "on"}
 
                     if not REQUIRE_ORG_VALIDATION and requested_organization_id is not None:
-                        # Auto-upsert the requested organization to satisfy postgres foreign keys
-                        cur.execute(
+                        await cur.execute(
                             """
                             INSERT INTO organizations (
                                 id, clerk_org_id, clerk_org_slug, name, created_at
@@ -762,9 +780,9 @@ class DocumentStorageService:
                             """,
                             (requested_organization_id, None, organization_name)
                         )
-                        organization_row = self._get_organization_by_id(cur, requested_organization_id)
+                        organization_row = await self._get_organization_by_id(cur, requested_organization_id)
                     elif requested_organization_id is not None:
-                        organization_row = self._get_organization_by_id(cur, requested_organization_id)
+                        organization_row = await self._get_organization_by_id(cur, requested_organization_id)
                         if organization_row is None:
                             raise OrganizationNotFoundError(
                                 f"Organization {requested_organization_id} was not found."
@@ -781,7 +799,7 @@ class DocumentStorageService:
 
                         existing_clerk_org_id = organization_row["clerk_org_id"]
                         if existing_clerk_org_id is None:
-                            membership_role = self._get_organization_membership_role(
+                            membership_role = await self._get_organization_membership_role(
                                 cur,
                                 organization_id=requested_organization_id,
                                 user_id=clerk_user_id,
@@ -790,7 +808,7 @@ class DocumentStorageService:
                                 raise DocumentAccessDeniedError(
                                     f"User {clerk_user_id} cannot claim organization {requested_organization_id}."
                                 )
-                            cur.execute(
+                            await cur.execute(
                                 """
                                 UPDATE organizations
                                 SET clerk_org_id = %s,
@@ -804,7 +822,7 @@ class DocumentStorageService:
                             raise OrganizationMismatchError(
                                 f"Organization {requested_organization_id} is linked to {existing_clerk_org_id}, not {private_org_key}."
                             )
-                        organization_row = self._get_organization_by_id(cur, requested_organization_id)
+                        organization_row = await self._get_organization_by_id(cur, requested_organization_id)
 
                     if organization_row is None:
                         organization_row = existing_private_org_row
@@ -815,7 +833,7 @@ class DocumentStorageService:
                                 "No private workspace exists for the authenticated user."
                             )
                         organization_id = str(uuid.uuid4())
-                        cur.execute(
+                        await cur.execute(
                             """
                             INSERT INTO organizations (
                                 id,
@@ -828,9 +846,9 @@ class DocumentStorageService:
                             """,
                             (organization_id, private_org_key, None, organization_name),
                         )
-                        organization_row = self._get_organization_by_id(cur, organization_id)
+                        organization_row = await self._get_organization_by_id(cur, organization_id)
                     else:
-                        cur.execute(
+                        await cur.execute(
                             """
                             UPDATE organizations
                             SET clerk_org_slug = NULL,
@@ -839,9 +857,9 @@ class DocumentStorageService:
                             """,
                             (organization_name, organization_row["id"]),
                         )
-                        organization_row = self._get_organization_by_id(cur, organization_row["id"])
+                        organization_row = await self._get_organization_by_id(cur, organization_row["id"])
 
-                    self._upsert_organization_membership(
+                    await self._upsert_organization_membership(
                         cur,
                         organization_id=organization_row["id"],
                         user_id=clerk_user_id,
@@ -858,7 +876,7 @@ class DocumentStorageService:
             "user_id": clerk_user_id,
         }
 
-    def create_version(
+    async def create_version(
         self,
         *,
         organization_id: str,
@@ -875,30 +893,55 @@ class DocumentStorageService:
         content_hash = self.compute_hash(markdown_bytes)
         object_key = f"objects/{content_hash}.md"
         size_bytes = len(markdown_bytes)
-        uploaded_object = self.minio_put_if_missing(self.settings.minio_bucket, object_key, markdown_bytes)
+        uploaded_object = await self.minio_put_if_missing(self.settings.minio_bucket, object_key, markdown_bytes)
 
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.transaction():
-                with conn.cursor() as cur:
-                    self._ensure_user(cur, user_id=actor_user_id)
-                    self._ensure_user_in_organization(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await self._ensure_user(cur, user_id=actor_user_id)
+                    await self._ensure_user_in_organization(
                         cur,
                         organization_id=organization_id,
                         user_id=actor_user_id,
                     )
 
                     if document_id is None:
-                        if not project_id:
-                            raise ValueError("project_id is required when creating a new document.")
-                        self._assert_project_in_org(
-                            cur,
-                            organization_id=organization_id,
-                            project_id=project_id,
-                        )
+                        if project_id:
+                            await self._assert_project_in_org(
+                                cur,
+                                organization_id=organization_id,
+                                project_id=project_id,
+                            )
+                        else:
+                            # Auto-assign to a "General" project, creating one if needed
+                            await cur.execute(
+                                """
+                                SELECT id FROM folders
+                                WHERE organization_id = %s AND name = 'General'
+                                LIMIT 1;
+                                """,
+                                (organization_id,),
+                            )
+                            row = await cur.fetchone()
+                            if row:
+                                project_id = str(row["id"])
+                            else:
+                                project_id = str(uuid.uuid4())
+                                await cur.execute(
+                                    """
+                                    INSERT INTO folders (
+                                        id, organization_id, name, description,
+                                        created_at, created_by, updated_at, updated_by
+                                    ) VALUES (%s, %s, 'General',
+                                        'Auto-created default project for uploads without a project.',
+                                        NOW(), %s, NOW(), %s);
+                                    """,
+                                    (project_id, organization_id, actor_user_id, actor_user_id),
+                                )
                         document_id = str(uuid.uuid4())
                         parent_version_id = None
                         version_no = 1
-                        cur.execute(
+                        await cur.execute(
                             """
                             INSERT INTO documents (
                                 id,
@@ -914,7 +957,7 @@ class DocumentStorageService:
                             """,
                             (document_id, organization_id, title, project_id, actor_user_id),
                         )
-                        self._upsert_document_membership(
+                        await self._upsert_document_membership(
                             cur,
                             organization_id=organization_id,
                             document_id=document_id,
@@ -923,7 +966,7 @@ class DocumentStorageService:
                             actor_user_id=actor_user_id,
                         )
                     else:
-                        document_row, _ = self._assert_document_access(
+                        document_row, _ = await self._assert_document_access(
                             cur,
                             organization_id=organization_id,
                             document_id=document_id,
@@ -939,13 +982,13 @@ class DocumentStorageService:
                         )
 
                         if project_id is not None:
-                            self._assert_project_in_org(
+                            await self._assert_project_in_org(
                                 cur,
                                 organization_id=organization_id,
                                 project_id=project_id,
                             )
                             if active_project_id != project_id:
-                                cur.execute(
+                                await cur.execute(
                                     """
                                     UPDATE documents
                                     SET folder_id = %s
@@ -960,7 +1003,7 @@ class DocumentStorageService:
                         if parent_version_id is None:
                             version_no = 1
                         else:
-                            cur.execute(
+                            await cur.execute(
                                 """
                                 SELECT version_no
                                 FROM document_versions
@@ -970,7 +1013,7 @@ class DocumentStorageService:
                                 """,
                                 (parent_version_id, organization_id, document_id),
                             )
-                            parent_version_row = cur.fetchone()
+                            parent_version_row = await cur.fetchone()
                             if parent_version_row is None:
                                 raise DocumentVersionNotFoundError(
                                     f"Current version for document {document_id} was not found."
@@ -978,7 +1021,7 @@ class DocumentStorageService:
                             version_no = parent_version_row["version_no"] + 1
 
                         if title is not None:
-                            cur.execute(
+                            await cur.execute(
                                 """
                                 UPDATE documents
                                 SET title = %s
@@ -989,7 +1032,7 @@ class DocumentStorageService:
                             )
 
                     version_id = str(uuid.uuid4())
-                    cur.execute(
+                    await cur.execute(
                         """
                         INSERT INTO document_versions (
                             id,
@@ -1020,7 +1063,7 @@ class DocumentStorageService:
                         ),
                     )
 
-                    cur.execute(
+                    await cur.execute(
                         """
                         UPDATE documents
                         SET current_version_id = %s,
@@ -1042,7 +1085,7 @@ class DocumentStorageService:
                         "object_uploaded": uploaded_object,
                     }
 
-                    self._write_audit(
+                    await self._write_audit(
                         cur,
                         organization_id=organization_id,
                         actor_user_id=actor_user_id,
@@ -1051,7 +1094,7 @@ class DocumentStorageService:
                         object_id=document_id,
                         metadata=audit_metadata,
                     )
-                    self._write_audit(
+                    await self._write_audit(
                         cur,
                         organization_id=organization_id,
                         actor_user_id=actor_user_id,
@@ -1082,7 +1125,7 @@ class DocumentStorageService:
             "size_bytes": size_bytes,
         }
 
-    def save_document_chunks(
+    async def save_document_chunks(
         self,
         *,
         organization_id: str,
@@ -1093,12 +1136,12 @@ class DocumentStorageService:
         if not chunks:
             return
 
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.transaction():
-                with conn.cursor() as cur:
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
                     for chunk in chunks:
                         chunk_id = str(uuid.uuid4())
-                        cur.execute(
+                        await cur.execute(
                             """
                             INSERT INTO document_chunks (
                                 id,
@@ -1127,7 +1170,7 @@ class DocumentStorageService:
                             ),
                         )
 
-    def get_document_chunks(
+    async def get_document_chunks(
         self,
         *,
         organization_id: str,
@@ -1137,16 +1180,16 @@ class DocumentStorageService:
         title: str | None = None,
         chunk_level: int | None = None,
     ) -> list[dict]:
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.cursor() as cur:
-                self._assert_document_access(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.cursor() as cur:
+                await self._assert_document_access(
                     cur,
                     organization_id=organization_id,
                     document_id=document_id,
                     user_id=actor_user_id,
                     allowed_roles=DOCUMENT_READ_ROLES,
                 )
-                
+
                 query = """
                     SELECT
                         id,
@@ -1169,36 +1212,31 @@ class DocumentStorageService:
                 if title is not None:
                     query += " AND title = %s"
                     params.append(title)
-                
+
                 if chunk_level is not None:
                     query += " AND chunk_level = %s"
                     params.append(chunk_level)
 
                 query += " ORDER BY created_at ASC;"
 
-                cur.execute(query, tuple(params))
-                rows = cur.fetchall()
+                await cur.execute(query, tuple(params))
+                rows = await cur.fetchall()
 
         return [
             {**row, "id": str(row["id"])}
             for row in rows
         ]
 
-    def delete_document(
+    async def delete_document(
         self,
         *,
         organization_id: str,
         document_id: str,
         actor_user_id: str,
     ) -> dict:
-        """Delete a document and all its associated chunks, versions, and MinIO objects.
-
-        Returns a summary of what was deleted.
-        """
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.cursor() as cur:
-                # Assert the user has owner-level access to the document
-                self._assert_document_access(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.cursor() as cur:
+                await self._assert_document_access(
                     cur,
                     organization_id=organization_id,
                     document_id=document_id,
@@ -1206,54 +1244,52 @@ class DocumentStorageService:
                     allowed_roles={"owner"},
                 )
 
-                # Collect all MinIO object keys from all versions to delete later
-                cur.execute(
+                await cur.execute(
                     """
                     SELECT object_key FROM document_versions
                     WHERE document_id = %s AND organization_id = %s;
                     """,
                     (document_id, organization_id),
                 )
-                version_rows = cur.fetchall()
+                version_rows = await cur.fetchall()
                 object_keys = [r["object_key"] for r in version_rows if r.get("object_key")]
 
-                # Count chunks for reporting
-                cur.execute(
+                await cur.execute(
                     "SELECT COUNT(*) AS cnt FROM document_chunks WHERE document_id = %s AND organization_id = %s;",
                     (document_id, organization_id),
                 )
-                chunk_count = (cur.fetchone() or {}).get("cnt", 0)
+                chunk_count = (await cur.fetchone() or {}).get("cnt", 0)
 
-                # Delete chunks first (FK child of versions)
-                cur.execute(
+                await cur.execute(
                     "DELETE FROM document_chunks WHERE document_id = %s AND organization_id = %s;",
                     (document_id, organization_id),
                 )
 
-                # Delete versions (FK child of documents)
-                cur.execute(
+                await cur.execute(
                     "DELETE FROM document_versions WHERE document_id = %s AND organization_id = %s;",
                     (document_id, organization_id),
                 )
 
-                # Delete the document record itself
-                cur.execute(
+                await cur.execute(
                     "DELETE FROM documents WHERE id = %s AND organization_id = %s;",
                     (document_id, organization_id),
                 )
 
-                conn.commit()
+                await conn.commit()
 
-        # Delete MinIO objects outside the DB transaction (best-effort)
-        deleted_objects: list[str] = []
-        failed_objects: list[str] = []
-        for key in object_keys:
-            try:
-                self.minio_client.remove_object(self.settings.minio_bucket, key)
-                deleted_objects.append(key)
-            except S3Error as exc:
-                logger.warning("Failed to delete MinIO object %s: %s", key, exc)
-                failed_objects.append(key)
+        def _delete_objects() -> tuple[list[str], list[str]]:
+            deleted: list[str] = []
+            failed: list[str] = []
+            for key in object_keys:
+                try:
+                    self.minio_client.remove_object(self.settings.minio_bucket, key)
+                    deleted.append(key)
+                except S3Error as exc:
+                    logger.warning("Failed to delete MinIO object %s: %s", key, exc)
+                    failed.append(key)
+            return deleted, failed
+
+        deleted_objects, failed_objects = await asyncio.to_thread(_delete_objects)
 
         return {
             "document_id": document_id,
@@ -1264,7 +1300,7 @@ class DocumentStorageService:
             "objects_failed": len(failed_objects),
         }
 
-    def list_documents(
+    async def list_documents(
         self,
         *,
         organization_id: str,
@@ -1273,21 +1309,27 @@ class DocumentStorageService:
         offset: int,
         project_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.cursor() as cur:
-                organization_role = self._ensure_user_in_organization(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.cursor() as cur:
+                organization_role = await self._ensure_user_in_organization(
                     cur,
                     organization_id=organization_id,
                     user_id=actor_user_id,
                 )
                 if project_id is not None:
-                    self._assert_project_in_org(
+                    await self._assert_project_in_org(
                         cur,
                         organization_id=organization_id,
                         project_id=project_id,
                     )
-                cur.execute(
-                    """
+                project_filter = ""
+                project_params: tuple = ()
+                if project_id is not None:
+                    project_filter = "AND d.folder_id = %s"
+                    project_params = (project_id,)
+
+                await cur.execute(
+                    f"""
                     SELECT
                         d.id AS document_id,
                         d.organization_id,
@@ -1330,7 +1372,7 @@ class DocumentStorageService:
                           AND f.organization_id = d.organization_id
                     WHERE d.organization_id = %s
                       AND (%s = 'owner' OR dm.user_id IS NOT NULL)
-                      AND (%s IS NULL OR d.folder_id = %s)
+                      {project_filter}
                     ORDER BY d.updated_at DESC
                     LIMIT %s
                     OFFSET %s;
@@ -1340,13 +1382,12 @@ class DocumentStorageService:
                         actor_user_id,
                         organization_id,
                         organization_role,
-                        project_id,
-                        project_id,
+                        *project_params,
                         limit,
                         offset,
                     ),
                 )
-                rows = cur.fetchall()
+                rows = await cur.fetchall()
 
         items: list[dict[str, Any]] = []
         for row in rows:
@@ -1396,15 +1437,15 @@ class DocumentStorageService:
             )
         return items
 
-    def _get_version_by_number(
+    async def _get_version_by_number(
         self,
-        cur: psycopg.Cursor[Any],
+        cur: psycopg.AsyncCursor[Any],
         *,
         organization_id: str,
         document_id: str,
         version_no: int,
     ) -> dict[str, Any] | None:
-        cur.execute(
+        await cur.execute(
             """
             SELECT
                 id,
@@ -1426,17 +1467,17 @@ class DocumentStorageService:
             """,
             (organization_id, document_id, version_no),
         )
-        return cur.fetchone()
+        return await cur.fetchone()
 
-    def _get_version_by_id(
+    async def _get_version_by_id(
         self,
-        cur: psycopg.Cursor[Any],
+        cur: psycopg.AsyncCursor[Any],
         *,
         organization_id: str,
         document_id: str,
         version_id: str,
     ) -> dict[str, Any] | None:
-        cur.execute(
+        await cur.execute(
             """
             SELECT
                 id,
@@ -1458,9 +1499,9 @@ class DocumentStorageService:
             """,
             (organization_id, document_id, version_id),
         )
-        return cur.fetchone()
+        return await cur.fetchone()
 
-    def _write_read_audit_if_requested(
+    async def _write_read_audit_if_requested(
         self,
         *,
         organization_id: str,
@@ -1468,10 +1509,10 @@ class DocumentStorageService:
         document_id: str,
         metadata: dict[str, Any],
     ) -> None:
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.transaction():
-                with conn.cursor() as cur:
-                    self._write_audit(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await self._write_audit(
                         cur,
                         organization_id=organization_id,
                         actor_user_id=actor_user_id,
@@ -1481,16 +1522,16 @@ class DocumentStorageService:
                         metadata=metadata,
                     )
 
-    def get_document_current(
+    async def get_document_current(
         self,
         *,
         organization_id: str,
         document_id: str,
         actor_user_id: str | None = None,
     ) -> dict[str, Any]:
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.cursor() as cur:
-                document_row, my_role = self._assert_document_access(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.cursor() as cur:
+                document_row, my_role = await self._assert_document_access(
                     cur,
                     organization_id=organization_id,
                     document_id=document_id,
@@ -1501,7 +1542,7 @@ class DocumentStorageService:
                 if current_version_id is None:
                     raise DocumentHasNoVersionsError(f"Document {document_id} does not have versions yet.")
 
-                version_row = self._get_version_by_id(
+                version_row = await self._get_version_by_id(
                     cur,
                     organization_id=organization_id,
                     document_id=document_id,
@@ -1513,9 +1554,9 @@ class DocumentStorageService:
                     )
 
         version = self._map_version_row(version_row)
-        content_bytes = self.minio_get(self.settings.minio_bucket, version["object_key"])
+        content_bytes = await self.minio_get(self.settings.minio_bucket, version["object_key"])
 
-        self._write_read_audit_if_requested(
+        await self._write_read_audit_if_requested(
             organization_id=organization_id,
             actor_user_id=actor_user_id,
             document_id=document_id,
@@ -1534,7 +1575,7 @@ class DocumentStorageService:
             "content_bytes": content_bytes,
         }
 
-    def get_document_version(
+    async def get_document_version(
         self,
         *,
         organization_id: str,
@@ -1542,16 +1583,16 @@ class DocumentStorageService:
         version_no: int,
         actor_user_id: str,
     ) -> dict[str, Any]:
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.cursor() as cur:
-                document_row, my_role = self._assert_document_access(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.cursor() as cur:
+                document_row, my_role = await self._assert_document_access(
                     cur,
                     organization_id=organization_id,
                     document_id=document_id,
                     user_id=actor_user_id,
                     allowed_roles=DOCUMENT_READ_ROLES,
                 )
-                version_row = self._get_version_by_number(
+                version_row = await self._get_version_by_number(
                     cur,
                     organization_id=organization_id,
                     document_id=document_id,
@@ -1563,9 +1604,9 @@ class DocumentStorageService:
                     )
 
         version = self._map_version_row(version_row)
-        content_bytes = self.minio_get(self.settings.minio_bucket, version["object_key"])
+        content_bytes = await self.minio_get(self.settings.minio_bucket, version["object_key"])
 
-        self._write_read_audit_if_requested(
+        await self._write_read_audit_if_requested(
             organization_id=organization_id,
             actor_user_id=actor_user_id,
             document_id=document_id,
@@ -1584,7 +1625,7 @@ class DocumentStorageService:
             "content_bytes": content_bytes,
         }
 
-    def list_versions(
+    async def list_versions(
         self,
         *,
         organization_id: str,
@@ -1593,16 +1634,16 @@ class DocumentStorageService:
         limit: int,
         offset: int,
     ) -> list[dict[str, Any]]:
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.cursor() as cur:
-                self._assert_document_access(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.cursor() as cur:
+                await self._assert_document_access(
                     cur,
                     organization_id=organization_id,
                     document_id=document_id,
                     user_id=actor_user_id,
                     allowed_roles=DOCUMENT_READ_ROLES,
                 )
-                cur.execute(
+                await cur.execute(
                     """
                     SELECT
                         id,
@@ -1626,27 +1667,27 @@ class DocumentStorageService:
                     """,
                     (organization_id, document_id, limit, offset),
                 )
-                rows = cur.fetchall()
+                rows = await cur.fetchall()
 
         return [self._map_version_row(row) for row in rows]
 
-    def list_document_members(
+    async def list_document_members(
         self,
         *,
         organization_id: str,
         document_id: str,
         actor_user_id: str,
     ) -> list[dict[str, Any]]:
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.cursor() as cur:
-                self._assert_document_access(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.cursor() as cur:
+                await self._assert_document_access(
                     cur,
                     organization_id=organization_id,
                     document_id=document_id,
                     user_id=actor_user_id,
                     allowed_roles=DOCUMENT_READ_ROLES,
                 )
-                cur.execute(
+                await cur.execute(
                     """
                     SELECT
                         dm.user_id,
@@ -1671,11 +1712,11 @@ class DocumentStorageService:
                     """,
                     (organization_id, document_id),
                 )
-                rows = cur.fetchall()
+                rows = await cur.fetchall()
 
         return [self._map_document_member_row(row) for row in rows]
 
-    def set_document_member_role(
+    async def set_document_member_role(
         self,
         *,
         organization_id: str,
@@ -1691,18 +1732,18 @@ class DocumentStorageService:
 
         target_user_id = target_user_id.strip()
 
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.transaction():
-                with conn.cursor() as cur:
-                    self._assert_document_access(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await self._assert_document_access(
                         cur,
                         organization_id=organization_id,
                         document_id=document_id,
                         user_id=actor_user_id,
                         allowed_roles={"owner"},
                     )
-                    self._ensure_user(cur, user_id=target_user_id)
-                    self._upsert_organization_membership(
+                    await self._ensure_user(cur, user_id=target_user_id)
+                    await self._upsert_organization_membership(
                         cur,
                         organization_id=organization_id,
                         user_id=target_user_id,
@@ -1710,7 +1751,7 @@ class DocumentStorageService:
                         actor_user_id=actor_user_id,
                         overwrite_role=False,
                     )
-                    self._upsert_document_membership(
+                    await self._upsert_document_membership(
                         cur,
                         organization_id=organization_id,
                         document_id=document_id,
@@ -1718,7 +1759,7 @@ class DocumentStorageService:
                         role=role,
                         actor_user_id=actor_user_id,
                     )
-                    self._write_audit(
+                    await self._write_audit(
                         cur,
                         organization_id=organization_id,
                         actor_user_id=actor_user_id,
@@ -1732,7 +1773,7 @@ class DocumentStorageService:
                         },
                     )
 
-                    cur.execute(
+                    await cur.execute(
                         """
                         SELECT
                             dm.user_id,
@@ -1751,7 +1792,7 @@ class DocumentStorageService:
                         """,
                         (organization_id, document_id, target_user_id),
                     )
-                    row = cur.fetchone()
+                    row = await cur.fetchone()
 
         if row is None:
             raise DocumentMemberNotFoundError(
@@ -1759,7 +1800,7 @@ class DocumentStorageService:
             )
         return self._map_document_member_row(row)
 
-    def remove_document_member(
+    async def remove_document_member(
         self,
         *,
         organization_id: str,
@@ -1772,17 +1813,17 @@ class DocumentStorageService:
 
         target_user_id = target_user_id.strip()
 
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.transaction():
-                with conn.cursor() as cur:
-                    self._assert_document_access(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await self._assert_document_access(
                         cur,
                         organization_id=organization_id,
                         document_id=document_id,
                         user_id=actor_user_id,
                         allowed_roles={"owner"},
                     )
-                    existing_role = self._get_document_membership_role(
+                    existing_role = await self._get_document_membership_role(
                         cur,
                         organization_id=organization_id,
                         document_id=document_id,
@@ -1793,7 +1834,7 @@ class DocumentStorageService:
                             f"User {target_user_id} is not assigned to document {document_id}."
                         )
 
-                    if existing_role == "owner" and self._count_document_owners(
+                    if existing_role == "owner" and await self._count_document_owners(
                         cur,
                         organization_id=organization_id,
                         document_id=document_id,
@@ -1802,7 +1843,7 @@ class DocumentStorageService:
                             "Cannot remove the last owner from a document."
                         )
 
-                    cur.execute(
+                    await cur.execute(
                         """
                         DELETE FROM document_memberships
                         WHERE organization_id = %s
@@ -1811,7 +1852,7 @@ class DocumentStorageService:
                         """,
                         (organization_id, document_id, target_user_id),
                     )
-                    self._write_audit(
+                    await self._write_audit(
                         cur,
                         organization_id=organization_id,
                         actor_user_id=actor_user_id,
@@ -1824,37 +1865,43 @@ class DocumentStorageService:
                         },
                     )
 
-    def gc_unreferenced_objects(
+    async def gc_unreferenced_objects(
         self,
         *,
         dry_run: bool = True,
         max_delete: int = 1000,
     ) -> dict[str, Any]:
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT DISTINCT object_key FROM document_versions;")
-                referenced_keys = {row["object_key"] for row in cur.fetchall()}
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT DISTINCT object_key FROM document_versions;")
+                referenced_keys = {row["object_key"] for row in await cur.fetchall()}
 
-        scanned = 0
-        unreferenced: list[str] = []
-        referenced = 0
-        for obj in self.minio_client.list_objects(
-            bucket_name=self.settings.minio_bucket,
-            prefix="objects/",
-            recursive=True,
-        ):
-            scanned += 1
-            object_key = obj.object_name
-            if object_key in referenced_keys:
-                referenced += 1
-                continue
-            unreferenced.append(object_key)
+        bucket = self.settings.minio_bucket
+
+        def _scan() -> tuple[int, list[str], int]:
+            scanned = 0
+            unreferenced: list[str] = []
+            referenced = 0
+            for obj in self.minio_client.list_objects(bucket_name=bucket, prefix="objects/", recursive=True):
+                scanned += 1
+                if obj.object_name in referenced_keys:
+                    referenced += 1
+                else:
+                    unreferenced.append(obj.object_name)
+            return scanned, unreferenced, referenced
+
+        scanned, unreferenced, referenced = await asyncio.to_thread(_scan)
 
         deleted: list[str] = []
         if not dry_run:
-            for object_key in unreferenced[:max_delete]:
-                self.minio_client.remove_object(self.settings.minio_bucket, object_key)
-                deleted.append(object_key)
+            def _delete(keys: list[str]) -> list[str]:
+                done: list[str] = []
+                for key in keys:
+                    self.minio_client.remove_object(bucket, key)
+                    done.append(key)
+                return done
+
+            deleted = await asyncio.to_thread(_delete, unreferenced[:max_delete])
 
         return {
             "dry_run": dry_run,
@@ -1869,17 +1916,17 @@ class DocumentStorageService:
     # Compliance result persistence
     # ------------------------------------------------------------------
 
-    def save_compliance_result(
+    async def save_compliance_result(
         self,
         *,
         organization_id: str,
         version_id: str,
         result: dict[str, Any],
     ) -> None:
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.transaction():
-                with conn.cursor() as cur:
-                    cur.execute(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await cur.execute(
                         """
                         UPDATE document_versions
                            SET compliance_result = %s
@@ -1895,7 +1942,7 @@ class DocumentStorageService:
     # Project management
     # ------------------------------------------------------------------
 
-    def create_project(
+    async def create_project(
         self,
         *,
         organization_id: str,
@@ -1911,13 +1958,13 @@ class DocumentStorageService:
         if project_description == "":
             project_description = None
 
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.transaction():
-                with conn.cursor() as cur:
-                    self._ensure_user_in_organization(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await self._ensure_user_in_organization(
                         cur, organization_id=organization_id, user_id=actor_user_id
                     )
-                    cur.execute(
+                    await cur.execute(
                         """
                         INSERT INTO folders (
                             organization_id,
@@ -1946,24 +1993,24 @@ class DocumentStorageService:
                             actor_user_id,
                         ),
                     )
-                    row = cur.fetchone()
+                    row = await cur.fetchone()
 
         if row is None:
             raise DocumentStorageError("Project creation failed.")
         return self._map_project_row(row)
 
-    def list_projects(
+    async def list_projects(
         self,
         *,
         organization_id: str,
         actor_user_id: str,
     ) -> list[dict[str, Any]]:
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.cursor() as cur:
-                self._ensure_user_in_organization(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.cursor() as cur:
+                await self._ensure_user_in_organization(
                     cur, organization_id=organization_id, user_id=actor_user_id
                 )
-                cur.execute(
+                await cur.execute(
                     """
                     SELECT
                         f.id,
@@ -1993,23 +2040,23 @@ class DocumentStorageService:
                     """,
                     (organization_id,),
                 )
-                rows = cur.fetchall()
+                rows = await cur.fetchall()
 
         return [self._map_project_row(row) for row in rows]
 
-    def get_project(
+    async def get_project(
         self,
         *,
         organization_id: str,
         project_id: str,
         actor_user_id: str,
     ) -> dict[str, Any]:
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.cursor() as cur:
-                self._ensure_user_in_organization(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.cursor() as cur:
+                await self._ensure_user_in_organization(
                     cur, organization_id=organization_id, user_id=actor_user_id
                 )
-                row = self._assert_project_in_org(
+                row = await self._assert_project_in_org(
                     cur,
                     organization_id=organization_id,
                     project_id=project_id,
@@ -2017,7 +2064,7 @@ class DocumentStorageService:
 
         return self._map_project_row(row)
 
-    def update_project(
+    async def update_project(
         self,
         *,
         organization_id: str,
@@ -2037,19 +2084,19 @@ class DocumentStorageService:
         if description is not None and project_description == "":
             project_description = None
 
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.transaction():
-                with conn.cursor() as cur:
-                    self._ensure_user_in_organization(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await self._ensure_user_in_organization(
                         cur, organization_id=organization_id, user_id=actor_user_id
                     )
-                    self._assert_project_in_org(
+                    await self._assert_project_in_org(
                         cur,
                         organization_id=organization_id,
                         project_id=project_id,
                         for_update=True,
                     )
-                    cur.execute(
+                    await cur.execute(
                         """
                         UPDATE folders
                         SET name = COALESCE(%s, name),
@@ -2086,26 +2133,26 @@ class DocumentStorageService:
                             organization_id,
                         ),
                     )
-                    row = cur.fetchone()
+                    row = await cur.fetchone()
 
         if row is None:
             raise ProjectNotFoundError(f"Project {project_id} was not found.")
         return self._map_project_row(row)
 
-    def delete_project(
+    async def delete_project(
         self,
         *,
         organization_id: str,
         project_id: str,
         actor_user_id: str,
     ) -> None:
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.transaction():
-                with conn.cursor() as cur:
-                    self._ensure_user_in_organization(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await self._ensure_user_in_organization(
                         cur, organization_id=organization_id, user_id=actor_user_id
                     )
-                    project_row = self._assert_project_in_org(
+                    project_row = await self._assert_project_in_org(
                         cur,
                         organization_id=organization_id,
                         project_id=project_id,
@@ -2115,7 +2162,7 @@ class DocumentStorageService:
                         raise DocumentOperationConflictError(
                             f"Project {project_id} cannot be deleted while documents are still assigned to it."
                         )
-                    cur.execute(
+                    await cur.execute(
                         """
                         DELETE FROM folders
                         WHERE id = %s
@@ -2126,7 +2173,7 @@ class DocumentStorageService:
                     if cur.rowcount == 0:
                         raise ProjectNotFoundError(f"Project {project_id} was not found.")
 
-    def move_document_to_project(
+    async def move_document_to_project(
         self,
         *,
         document_id: str,
@@ -2137,22 +2184,22 @@ class DocumentStorageService:
         if not project_id.strip():
             raise ValueError("project_id is required.")
 
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.transaction():
-                with conn.cursor() as cur:
-                    self._assert_document_access(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await self._assert_document_access(
                         cur,
                         organization_id=organization_id,
                         document_id=document_id,
                         user_id=actor_user_id,
                         allowed_roles=DOCUMENT_WRITE_ROLES,
                     )
-                    self._assert_project_in_org(
+                    await self._assert_project_in_org(
                         cur,
                         organization_id=organization_id,
                         project_id=project_id,
                     )
-                    cur.execute(
+                    await cur.execute(
                         """
                         UPDATE documents
                         SET folder_id = %s,
@@ -2169,20 +2216,20 @@ class DocumentStorageService:
     # Folder management
     # ------------------------------------------------------------------
 
-    def create_folder(
+    async def create_folder(
         self,
         *,
         organization_id: str,
         name: str,
         actor_user_id: str,
     ) -> dict[str, Any]:
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.transaction():
-                with conn.cursor() as cur:
-                    self._ensure_user_in_organization(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await self._ensure_user_in_organization(
                         cur, organization_id=organization_id, user_id=actor_user_id
                     )
-                    cur.execute(
+                    await cur.execute(
                         """
                         INSERT INTO folders (organization_id, name, created_by)
                         VALUES (%s, %s, %s)
@@ -2190,20 +2237,20 @@ class DocumentStorageService:
                         """,
                         (organization_id, name, actor_user_id),
                     )
-                    return cur.fetchone()  # type: ignore[return-value]
+                    return await cur.fetchone()  # type: ignore[return-value]
 
-    def list_folders(
+    async def list_folders(
         self,
         *,
         organization_id: str,
         actor_user_id: str,
     ) -> list[dict[str, Any]]:
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.cursor() as cur:
-                self._ensure_user_in_organization(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.cursor() as cur:
+                await self._ensure_user_in_organization(
                     cur, organization_id=organization_id, user_id=actor_user_id
                 )
-                cur.execute(
+                await cur.execute(
                     """
                     SELECT id, organization_id, name, created_at, created_by
                     FROM folders
@@ -2212,9 +2259,9 @@ class DocumentStorageService:
                     """,
                     (organization_id,),
                 )
-                return cur.fetchall()
+                return await cur.fetchall()
 
-    def rename_folder(
+    async def rename_folder(
         self,
         *,
         folder_id: str,
@@ -2222,13 +2269,13 @@ class DocumentStorageService:
         name: str,
         actor_user_id: str,
     ) -> None:
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.transaction():
-                with conn.cursor() as cur:
-                    self._ensure_user_in_organization(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await self._ensure_user_in_organization(
                         cur, organization_id=organization_id, user_id=actor_user_id
                     )
-                    cur.execute(
+                    await cur.execute(
                         """
                         UPDATE folders SET name = %s
                         WHERE id = %s AND organization_id = %s;
@@ -2238,28 +2285,28 @@ class DocumentStorageService:
                     if cur.rowcount == 0:
                         raise DocumentNotFoundError(f"Folder {folder_id} not found")
 
-    def delete_folder(
+    async def delete_folder(
         self,
         *,
         folder_id: str,
         organization_id: str,
         actor_user_id: str,
     ) -> None:
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.transaction():
-                with conn.cursor() as cur:
-                    self._ensure_user_in_organization(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await self._ensure_user_in_organization(
                         cur, organization_id=organization_id, user_id=actor_user_id
                     )
                     # documents.folder_id becomes NULL via ON DELETE SET NULL
-                    cur.execute(
+                    await cur.execute(
                         "DELETE FROM folders WHERE id = %s AND organization_id = %s;",
                         (folder_id, organization_id),
                     )
                     if cur.rowcount == 0:
                         raise DocumentNotFoundError(f"Folder {folder_id} not found")
 
-    def move_document_to_folder(
+    async def move_document_to_folder(
         self,
         *,
         document_id: str,
@@ -2267,17 +2314,17 @@ class DocumentStorageService:
         folder_id: str | None,
         actor_user_id: str,
     ) -> None:
-        with psycopg.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
-            with conn.transaction():
-                with conn.cursor() as cur:
-                    self._assert_document_access(
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await self._assert_document_access(
                         cur,
                         organization_id=organization_id,
                         document_id=document_id,
                         user_id=actor_user_id,
                         allowed_roles=DOCUMENT_WRITE_ROLES,
                     )
-                    cur.execute(
+                    await cur.execute(
                         """
                         UPDATE documents SET folder_id = %s
                         WHERE id = %s AND organization_id = %s;

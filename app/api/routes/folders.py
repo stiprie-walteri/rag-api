@@ -39,10 +39,10 @@ async def create_folder(
     auth: AuthContext = Depends(get_auth_context),
 ):
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service, auth, requested_organization_id=organization_id, create_if_missing=False
     )
-    row = service.create_folder(
+    row = await service.create_folder(
         organization_id=org_context["organization_id"],
         name=body.name,
         actor_user_id=auth.user_id,
@@ -56,10 +56,10 @@ async def list_folders(
     auth: AuthContext = Depends(get_auth_context),
 ):
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service, auth, requested_organization_id=organization_id, create_if_missing=False
     )
-    rows = service.list_folders(
+    rows = await service.list_folders(
         organization_id=org_context["organization_id"],
         actor_user_id=auth.user_id,
     )
@@ -74,11 +74,11 @@ async def rename_folder(
     auth: AuthContext = Depends(get_auth_context),
 ):
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service, auth, requested_organization_id=organization_id, create_if_missing=False
     )
     try:
-        service.rename_folder(
+        await service.rename_folder(
             folder_id=folder_id,
             organization_id=org_context["organization_id"],
             name=body.name,
@@ -95,11 +95,11 @@ async def delete_folder(
     auth: AuthContext = Depends(get_auth_context),
 ):
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service, auth, requested_organization_id=organization_id, create_if_missing=False
     )
     try:
-        service.delete_folder(
+        await service.delete_folder(
             folder_id=folder_id,
             organization_id=org_context["organization_id"],
             actor_user_id=auth.user_id,
@@ -116,11 +116,11 @@ async def move_document_to_folder(
     auth: AuthContext = Depends(get_auth_context),
 ):
     service = require_docstore()
-    org_context = sync_authenticated_org(
+    org_context = await sync_authenticated_org(
         service, auth, requested_organization_id=organization_id, create_if_missing=False
     )
     try:
-        service.move_document_to_folder(
+        await service.move_document_to_folder(
             document_id=document_id,
             organization_id=org_context["organization_id"],
             folder_id=body.folder_id,
