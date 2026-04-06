@@ -53,6 +53,21 @@ services:
         mc anonymous set private "local/$$MINIO_BUCKET"
         echo "MinIO bucket $$MINIO_BUCKET is ready."
 
+  redis:
+    image: redis:7-alpine
+    container_name: rag-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - rag_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   rag_postgres_data:
   rag_minio_data:
+  rag_redis_data:

@@ -5,10 +5,6 @@ system_prompt: |
   AI AGENT INSTRUCTIONS: MiCA Programme of Operations Compliance Review
   Legal basis: Regulation (EU) 2023/1114 (MiCA), Art. 60 & 62, and
   Commission Delegated Regulation (EU) 2025/303 (RTS), Art. 1-11
-  
-  SELF-CONTAINED: All regulatory thresholds, eligibility criteria, and
-  substantive requirements are embedded in the Reference section below.
-  No external queries are needed to execute these instructions.
   ###############################################################################
   AGENT ROLE
   You are a regulatory compliance reviewer assessing whether a submitted
@@ -23,193 +19,214 @@ system_prompt: |
   ###############################################################################
 
   ==============================================================================
-  EMBEDDED REGULATORY REFERENCE -- READ BEFORE STARTING TASKS
+  AVAILABLE REGULATORY REFERENCES (use GetLegislation tool to retrieve)
   ==============================================================================
-  
-  [R1] ART. 60 ELIGIBLE ENTITY TYPES
-  Entities that may notify under Art. 60 instead of applying under Art. 62,
-  but ONLY for services equivalent to their existing authorisation:
-  - Credit institutions (authorised under Directive 2013/36/EU, CRD IV)
-  => may provide ALL crypto-asset services
-  - Investment firms (authorised under Directive 2014/65/EU, MiFID II)
-  => may provide equivalent services (see R2 for mapping)
-  - E-money institutions (authorised under Directive 2009/110/EC, EMD2)
-  => custody & administration, exchange for funds/crypto,
-  reception & transmission, execution of orders, transfer services
-  - Payment institutions (authorised under Directive 2015/2366/EU, PSD2)
-  => exchange for funds, reception & transmission, transfer services
-  - UCITS management companies (Directive 2009/65/EC)
-  => advice on crypto-assets, portfolio management on crypto-assets
-  - AIFMs (authorised under Directive 2011/61/EU)
-  => advice on crypto-assets, portfolio management on crypto-assets
-  - Market operators (authorised under MiFID II Art. 4(1)(18))
-  => operation of a trading platform for crypto-assets
-  An entity that does NOT fall into any category above CANNOT use Art. 60
-  and must submit a full Art. 62 application.
-  
-  [R2] ART. 60 SERVICE EQUIVALENCE MAP (for MiFID II investment firms)
-  MiCA service                             MiFID II equivalent
-  (A) Custody & administration          => Annex I, Section B, point (1)
-  (B) Operation of trading platform     => Operation of MTF or OTF
-  (Art. 4(1)(22)/(23))
-  (C) Exchange for funds                => Dealing on own account,
-  Annex I, Section A, point (3)
-  (D) Exchange for other crypto-assets  => Dealing on own account,
-  Annex I, Section A, point (3)
-  (E) Execution of orders               => Annex I, Section A, point (2)
-  (G) Reception & transmission          => Annex I, Section A, point (1)
-  (F) Placing of crypto-assets          => Annex I, Section A, point (6) or (7)
-  (H) Advice on crypto-assets           => Annex I, Section A, point (5)
-  (I) Portfolio management              => Annex I, Section A, point (4)
-  (J) Transfer services                 => No MiFID II equivalent --
-  only available to EMI/PSP under Art. 60
-  Note: Any MiCA service with no equivalent in the entity's existing
-  authorisation cannot be notified under Art. 60 and requires a separate
-  Art. 62 authorisation.
-  
-  [R3] ART. 67 PRUDENTIAL CAPITAL MINIMUMS
-  The applicant must at all times hold own funds or initial capital at least
-  equal to the highest applicable floor based on ALL services declared:
-  EUR 50,000  => providing ONLY: advice (H), reception & transmission (G),
-  portfolio management (I), or any combination of these three
-  EUR 125,000 => providing any of: execution of orders (E), exchange for
-  funds (C), exchange for crypto-assets (D), placing (F),
-  transfer services (J), custody & administration (A)
-  EUR 150,000 => operating a trading platform (B)
-  If services from multiple tiers are declared, the highest threshold applies.
-  Additionally, the CASP must at all times hold own funds of at least
-  one-quarter of the fixed overheads of the preceding year, whichever of the
-  floor and the overheads calculation is higher.
-  
-  [R4] ART. 73 OUTSOURCING KEY REQUIREMENTS
-  When outsourcing critical or important operational functions, the CASP must:
-  - Retain full regulatory responsibility; outsourcing does not transfer
-  compliance obligations to the provider
-  - NOT outsource to a degree that renders the entity a shell company or
-  impairs the management body's ability to oversee the activity
-  - Execute a written agreement per provider that defines: scope and SLAs,
-  audit rights for both the CASP and the competent authority, data
-  protection and confidentiality obligations, and termination provisions
-  - Conduct and document due diligence before engaging a provider of
-  critical or important functions
-  - Maintain and test a documented exit strategy covering each critical
-  outsourced function
-  - Ensure the competent authority retains unimpaired supervisory access
-  - Avoid providers in third countries where data access or enforcement
-  would be materially impaired
-  "Critical or important function" means any function whose defective or
-  failed execution would materially impair: continuous regulatory compliance;
-  financial performance; or the soundness and continuity of services.
-  
-  [R5] ART. 75 CUSTODY OBLIGATIONS
-  A CASP providing custody and administration of crypto-assets must:
-  - Maintain a custody policy describing operational and ICT risk sources
-  and the risk management systems addressing them
-  - Hold adequate arrangements (insurance, capital reserves, or equivalent)
-  to cover the risk of loss of private cryptographic keys or operational errors
-  - Keep individual records per client; reconcile client positions at least daily
-  - Segregate client crypto-assets from own assets at wallet/account level
-  - NEVER use client crypto-assets for own-account purposes under any circumstances
-  - Provide clients at least monthly with a statement of holdings and transactions
-  - Have procedures for return of client crypto-assets in insolvency/wind-down
-  - Where delegating to sub-custodians: conduct prior due diligence; verify
-  regulatory status; monitor on an ongoing basis; retain liability for
-  delegate-caused losses; prohibit further sub-delegation without prior approval
-  
-  [R6] TRAVEL RULE REQUIREMENTS (Regulation (EU) 2023/1113)
-  For every crypto-asset transfer (no de minimis threshold applies):
-  Originating CASP must transmit to beneficiary CASP:
-  - Originator full name (legal name for entities, personal name for individuals)
-  - Originator DLT address (blockchain address) or account identifier
-  - For transfers exceeding EUR 1,000: originator's postal address, national
-  ID number, customer identification number, or date and place of birth
-  Beneficiary CASP must obtain:
-  - Beneficiary full name
-  - Beneficiary DLT address or account identifier
-  The CASP must screen originator and beneficiary against sanctions lists before
-  processing. It must have risk-based procedures for self-hosted wallet transfers
-  to determine whether the self-hosted wallet belongs to the CASP's own client.
-  Controls must handle incomplete, missing, or suspicious travel rule data
-  (reject, freeze, file STR as applicable).
-  
-  [R7] DORA-ALIGNED ICT REQUIREMENTS (Regulation (EU) 2022/2554 key elements)
-  A CASP must have an ICT risk management framework that includes:
-  - A documented ICT risk policy identifying: all ICT assets (hardware, software,
-  data, cloud services), the threat landscape, and the entity's risk tolerance
-  - Processes for continuous ICT risk identification, assessment, and mitigation
-  - Documented Recovery Time Objectives (RTO) and Recovery Point Objectives (RPO)
-  for critical ICT systems
-  - An ICT incident management process: detection (monitoring and alerting),
-  classification by severity, escalation, and root-cause analysis
-  - Regulatory incident reporting: major ICT incidents reported to the competent
-  authority within 4 hours of classification as major, with an intermediate
-  report within 72 hours and a final report within one month
-  - Digital operational resilience testing: scenario-based testing of critical
-  ICT systems at least annually; penetration testing at least annually for
-  systems supporting critical or important functions
-  - ICT third-party risk management: register of all ICT providers, contractual
-  protections (audit rights, data portability, exit provisions), assessment of
-  concentration risk where one provider supports multiple critical functions
-  Note: Entities below the DORA microenterprise threshold (fewer than 10 staff
-  AND either less than EUR 2m annual turnover or less than EUR 2m balance sheet
-  total) benefit from a simplified regime but must still have a basic ICT risk
-  framework and an incident response procedure.
-  
-  [R8] AML/CTF FRAMEWORK REQUIREMENTS (Directive (EU) 2015/849 as amended)
-  The CASP must have a risk-based AML/CTF framework that includes:
-  - A documented business-wide risk assessment identifying ML/TF risks specific
-  to crypto-asset services: transaction anonymity, cross-border flows, mixer
-  and tumbler exposure, smart contract interactions, high-risk jurisdictions
-  - Customer due diligence (CDD) at onboarding: verification of client identity,
-  beneficial ownership (UBOs holding >= 25% of a legal entity), purpose of
-  business relationship, and source of funds
-  - Enhanced due diligence (EDD) for: politically exposed persons (PEPs), clients
-  from FATF high-risk third countries, and relationships flagged as high-risk
-  - Ongoing transaction monitoring: automated screening for unusual patterns;
-  risk-based frequency of relationship reviews
-  - Sanctions screening: real-time screening against EU, UN, and applicable
-  national sanctions lists for all clients, beneficial owners, and counterparties;
-  documented procedures for handling hits
-  - Suspicious transaction reporting (STR): documented escalation path to the MLRO
-  and, where appropriate, to the national Financial Intelligence Unit (FIU)
-  - Designated MLRO with documented authority, independence, and direct reporting
-  line to the management body; authority to file STRs independently
-  - Annual AML/CTF training for all relevant staff
-  - Record retention: all CDD documentation and transaction records kept for
-  at least five years
-  
-  [R9] FIT AND PROPER -- MANAGEMENT BODY (Art. 62(2)(g) and Art. 62(3)(a)-(b))
-  For EVERY member of the management body, the applicant must demonstrate:
-  - Absence of criminal convictions in: commercial law, insolvency law,
-  financial services law, AML/CTF, fraud, and professional liability
-  - Absence of regulatory sanctions, enforcement orders, or disqualifications
-  from holding management positions in regulated entities
-  - No pending criminal investigations (as known at time of application)
-  Collectively, the management body must demonstrate:
-  - Adequate knowledge of: crypto-asset markets, applicable law (MiCA, AMLD,
-  DORA, consumer protection), risk management, internal control frameworks,
-  and financial management
-  - Sufficient time commitment by each member to perform their duties
-  - Diversity of skills such that no single individual's absence creates an
-  unmanageable key-person dependency
-  
-  [R10] QUALIFYING HOLDERS (Art. 62(2)(h) and Art. 62(3)(c))
-  A "qualifying holding" is a direct or indirect holding of 10% or more of
-  the capital or voting rights of the applicant entity.
-  The applicant must disclose:
-  - The identity of every qualifying holder (natural or legal person)
-  - The size of each qualifying holding (percentage and absolute amount)
-  For each qualifying holder, the applicant must demonstrate:
-  - Absence of criminal convictions in: commercial law, insolvency law,
-  financial services law, AML/CTF, fraud, and professional liability
-  - Absence of regulatory sanctions or disqualifications
-  If there are no qualifying holders other than management body members already
-  covered under R9, the document must explicitly state this.
+  R1:  Art. 60 Eligible Entity Types
+  R2:  Art. 60 Service Equivalence Map (MiFID II investment firms)
+  R3:  Art. 67 Prudential Capital Minimums
+  R4:  Art. 73 Outsourcing Key Requirements
+  R5:  Art. 75 Custody Obligations
+  R6:  Travel Rule Requirements (Regulation (EU) 2023/1113)
+  R7:  DORA-Aligned ICT Requirements (Regulation (EU) 2022/2554)
+  R8:  AML/CTF Framework Requirements (Directive (EU) 2015/849)
+  R9:  Fit and Proper -- Management Body (Art. 62(2)(g), Art. 62(3)(a)-(b))
+  R10: Qualifying Holders (Art. 62(2)(h), Art. 62(3)(c))
 
-  ==============================================================================
-  TASKS
-  ==============================================================================
+  Use GetLegislation(reference_ids) to retrieve the full text of specific
+  references BEFORE evaluating tasks that cite them (e.g. [R1], [R3]).
+  Only fetch the references you need for the current task.
 
+references:
+  R1:
+    title: "Art. 60 Eligible Entity Types"
+    text: |
+      Entities that may notify under Art. 60 instead of applying under Art. 62,
+      but ONLY for services equivalent to their existing authorisation:
+      - Credit institutions (authorised under Directive 2013/36/EU, CRD IV)
+        => may provide ALL crypto-asset services
+      - Investment firms (authorised under Directive 2014/65/EU, MiFID II)
+        => may provide equivalent services (see R2 for mapping)
+      - E-money institutions (authorised under Directive 2009/110/EC, EMD2)
+        => custody & administration, exchange for funds/crypto,
+           reception & transmission, execution of orders, transfer services
+      - Payment institutions (authorised under Directive 2015/2366/EU, PSD2)
+        => exchange for funds, reception & transmission, transfer services
+      - UCITS management companies (Directive 2009/65/EC)
+        => advice on crypto-assets, portfolio management on crypto-assets
+      - AIFMs (authorised under Directive 2011/61/EU)
+        => advice on crypto-assets, portfolio management on crypto-assets
+      - Market operators (authorised under MiFID II Art. 4(1)(18))
+        => operation of a trading platform for crypto-assets
+      An entity that does NOT fall into any category above CANNOT use Art. 60
+      and must submit a full Art. 62 application.
+  R2:
+    title: "Art. 60 Service Equivalence Map (for MiFID II investment firms)"
+    text: |
+      MiCA service                             MiFID II equivalent
+      (A) Custody & administration          => Annex I, Section B, point (1)
+      (B) Operation of trading platform     => Operation of MTF or OTF
+                                               (Art. 4(1)(22)/(23))
+      (C) Exchange for funds                => Dealing on own account,
+                                               Annex I, Section A, point (3)
+      (D) Exchange for other crypto-assets  => Dealing on own account,
+                                               Annex I, Section A, point (3)
+      (E) Execution of orders               => Annex I, Section A, point (2)
+      (G) Reception & transmission          => Annex I, Section A, point (1)
+      (F) Placing of crypto-assets          => Annex I, Section A, point (6) or (7)
+      (H) Advice on crypto-assets           => Annex I, Section A, point (5)
+      (I) Portfolio management              => Annex I, Section A, point (4)
+      (J) Transfer services                 => No MiFID II equivalent --
+                                               only available to EMI/PSP under Art. 60
+      Note: Any MiCA service with no equivalent in the entity's existing
+      authorisation cannot be notified under Art. 60 and requires a separate
+      Art. 62 authorisation.
+  R3:
+    title: "Art. 67 Prudential Capital Minimums"
+    text: |
+      The applicant must at all times hold own funds or initial capital at least
+      equal to the highest applicable floor based on ALL services declared:
+      EUR 50,000  => providing ONLY: advice (H), reception & transmission (G),
+                     portfolio management (I), or any combination of these three
+      EUR 125,000 => providing any of: execution of orders (E), exchange for
+                     funds (C), exchange for crypto-assets (D), placing (F),
+                     transfer services (J), custody & administration (A)
+      EUR 150,000 => operating a trading platform (B)
+      If services from multiple tiers are declared, the highest threshold applies.
+      Additionally, the CASP must at all times hold own funds of at least
+      one-quarter of the fixed overheads of the preceding year, whichever of the
+      floor and the overheads calculation is higher.
+  R4:
+    title: "Art. 73 Outsourcing Key Requirements"
+    text: |
+      When outsourcing critical or important operational functions, the CASP must:
+      - Retain full regulatory responsibility; outsourcing does not transfer
+        compliance obligations to the provider
+      - NOT outsource to a degree that renders the entity a shell company or
+        impairs the management body's ability to oversee the activity
+      - Execute a written agreement per provider that defines: scope and SLAs,
+        audit rights for both the CASP and the competent authority, data
+        protection and confidentiality obligations, and termination provisions
+      - Conduct and document due diligence before engaging a provider of
+        critical or important functions
+      - Maintain and test a documented exit strategy covering each critical
+        outsourced function
+      - Ensure the competent authority retains unimpaired supervisory access
+      - Avoid providers in third countries where data access or enforcement
+        would be materially impaired
+      "Critical or important function" means any function whose defective or
+      failed execution would materially impair: continuous regulatory compliance;
+      financial performance; or the soundness and continuity of services.
+  R5:
+    title: "Art. 75 Custody Obligations"
+    text: |
+      A CASP providing custody and administration of crypto-assets must:
+      - Maintain a custody policy describing operational and ICT risk sources
+        and the risk management systems addressing them
+      - Hold adequate arrangements (insurance, capital reserves, or equivalent)
+        to cover the risk of loss of private cryptographic keys or operational errors
+      - Keep individual records per client; reconcile client positions at least daily
+      - Segregate client crypto-assets from own assets at wallet/account level
+      - NEVER use client crypto-assets for own-account purposes under any circumstances
+      - Provide clients at least monthly with a statement of holdings and transactions
+      - Have procedures for return of client crypto-assets in insolvency/wind-down
+      - Where delegating to sub-custodians: conduct prior due diligence; verify
+        regulatory status; monitor on an ongoing basis; retain liability for
+        delegate-caused losses; prohibit further sub-delegation without prior approval
+  R6:
+    title: "Travel Rule Requirements (Regulation (EU) 2023/1113)"
+    text: |
+      For every crypto-asset transfer (no de minimis threshold applies):
+      Originating CASP must transmit to beneficiary CASP:
+      - Originator full name (legal name for entities, personal name for individuals)
+      - Originator DLT address (blockchain address) or account identifier
+      - For transfers exceeding EUR 1,000: originator's postal address, national
+        ID number, customer identification number, or date and place of birth
+      Beneficiary CASP must obtain:
+      - Beneficiary full name
+      - Beneficiary DLT address or account identifier
+      The CASP must screen originator and beneficiary against sanctions lists before
+      processing. It must have risk-based procedures for self-hosted wallet transfers
+      to determine whether the self-hosted wallet belongs to the CASP's own client.
+      Controls must handle incomplete, missing, or suspicious travel rule data
+      (reject, freeze, file STR as applicable).
+  R7:
+    title: "DORA-Aligned ICT Requirements (Regulation (EU) 2022/2554 key elements)"
+    text: |
+      A CASP must have an ICT risk management framework that includes:
+      - A documented ICT risk policy identifying: all ICT assets (hardware, software,
+        data, cloud services), the threat landscape, and the entity's risk tolerance
+      - Processes for continuous ICT risk identification, assessment, and mitigation
+      - Documented Recovery Time Objectives (RTO) and Recovery Point Objectives (RPO)
+        for critical ICT systems
+      - An ICT incident management process: detection (monitoring and alerting),
+        classification by severity, escalation, and root-cause analysis
+      - Regulatory incident reporting: major ICT incidents reported to the competent
+        authority within 4 hours of classification as major, with an intermediate
+        report within 72 hours and a final report within one month
+      - Digital operational resilience testing: scenario-based testing of critical
+        ICT systems at least annually; penetration testing at least annually for
+        systems supporting critical or important functions
+      - ICT third-party risk management: register of all ICT providers, contractual
+        protections (audit rights, data portability, exit provisions), assessment of
+        concentration risk where one provider supports multiple critical functions
+      Note: Entities below the DORA microenterprise threshold (fewer than 10 staff
+      AND either less than EUR 2m annual turnover or less than EUR 2m balance sheet
+      total) benefit from a simplified regime but must still have a basic ICT risk
+      framework and an incident response procedure.
+  R8:
+    title: "AML/CTF Framework Requirements (Directive (EU) 2015/849 as amended)"
+    text: |
+      The CASP must have a risk-based AML/CTF framework that includes:
+      - A documented business-wide risk assessment identifying ML/TF risks specific
+        to crypto-asset services: transaction anonymity, cross-border flows, mixer
+        and tumbler exposure, smart contract interactions, high-risk jurisdictions
+      - Customer due diligence (CDD) at onboarding: verification of client identity,
+        beneficial ownership (UBOs holding >= 25% of a legal entity), purpose of
+        business relationship, and source of funds
+      - Enhanced due diligence (EDD) for: politically exposed persons (PEPs), clients
+        from FATF high-risk third countries, and relationships flagged as high-risk
+      - Ongoing transaction monitoring: automated screening for unusual patterns;
+        risk-based frequency of relationship reviews
+      - Sanctions screening: real-time screening against EU, UN, and applicable
+        national sanctions lists for all clients, beneficial owners, and counterparties;
+        documented procedures for handling hits
+      - Suspicious transaction reporting (STR): documented escalation path to the MLRO
+        and, where appropriate, to the national Financial Intelligence Unit (FIU)
+      - Designated MLRO with documented authority, independence, and direct reporting
+        line to the management body; authority to file STRs independently
+      - Annual AML/CTF training for all relevant staff
+      - Record retention: all CDD documentation and transaction records kept for
+        at least five years
+  R9:
+    title: "Fit and Proper -- Management Body (Art. 62(2)(g) and Art. 62(3)(a)-(b))"
+    text: |
+      For EVERY member of the management body, the applicant must demonstrate:
+      - Absence of criminal convictions in: commercial law, insolvency law,
+        financial services law, AML/CTF, fraud, and professional liability
+      - Absence of regulatory sanctions, enforcement orders, or disqualifications
+        from holding management positions in regulated entities
+      - No pending criminal investigations (as known at time of application)
+      Collectively, the management body must demonstrate:
+      - Adequate knowledge of: crypto-asset markets, applicable law (MiCA, AMLD,
+        DORA, consumer protection), risk management, internal control frameworks,
+        and financial management
+      - Sufficient time commitment by each member to perform their duties
+      - Diversity of skills such that no single individual's absence creates an
+        unmanageable key-person dependency
+  R10:
+    title: "Qualifying Holders (Art. 62(2)(h) and Art. 62(3)(c))"
+    text: |
+      A "qualifying holding" is a direct or indirect holding of 10% or more of
+      the capital or voting rights of the applicant entity.
+      The applicant must disclose:
+      - The identity of every qualifying holder (natural or legal person)
+      - The size of each qualifying holding (percentage and absolute amount)
+      For each qualifying holder, the applicant must demonstrate:
+      - Absence of criminal convictions in: commercial law, insolvency law,
+        financial services law, AML/CTF, fraud, and professional liability
+      - Absence of regulatory sanctions or disqualifications
+      If there are no qualifying holders other than management body members already
+      covered under R9, the document must explicitly state this.
 
 Tasks:
 
@@ -717,93 +734,3 @@ Tasks:
       entity-specific detail. Boilerplate sections that could apply to any CASP
       without modification should be identified for the applicant to revise with
       concrete, entity-specific operational content."
-
-
-
-  - - "TASK 23: Produce YAML Findings Report"
-    - "Output your complete review as a single YAML document and nothing else --
-      no preamble, no prose, no markdown fences. The output must mirror the
-      Tasks structure of these instructions exactly: one top-level list entry per
-      task, where the first item is the task-level verdict and every subsequent
-      item is the result for one subtask, in the same order as the instructions.
-      Use the entry formats and status rules defined below."
-    - |
-        # ENTRY FORMATS
-        #
-        # TASK-LEVEL ENTRY (first item in each task list):
-        #   "[STATUS] TASK-NN: Task name"
-        #   STATUS is derived from its subtask results (see rules below).
-        #
-        # SUBTASK ENTRY -- PASS:
-        #   "[PASS] NN.NN Check name: <one-sentence finding>"
-        #
-        # SUBTASK ENTRY -- FAIL:
-        #   "[FAIL:SEVERITY] NN.NN Check name: <one-sentence finding> |
-        #    REF: <legal reference> | REMEDIATION: <specific action required>"
-        #   SEVERITY is either MATERIAL or SIGNIFICANT.
-        #
-        # SUBTASK ENTRY -- OBSERVATION:
-        #   "[OBS] NN.NN Check name: <one-sentence finding> |
-        #    SUGGESTION: <what would strengthen this section>"
-        #
-        # SUBTASK ENTRY -- SKIPPED:
-        #   "[SKIP] NN.NN Check name: Not declared -- correctly omitted."
-        #
-        # STATUS RULES
-        #
-        # PASS        -- element is present and adequately addressed
-        # FAIL        -- element is absent or materially inadequate;
-        #                always include SEVERITY and REMEDIATION
-        # OBS         -- element is present but weakly substantiated,
-        #                boilerplate-heavy, or internally inconsistent;
-        #                always include SUGGESTION
-        # SKIP        -- conditional check not applicable
-        #
-        # SEVERITY (FAIL only):
-        #   MATERIAL    -- blocks authorisation or notification approval
-        #   SIGNIFICANT -- likely to trigger supervisory queries before approval
-        #
-        # TASK-LEVEL STATUS (derived):
-        #   PASS    -- all subtasks are PASS or SKIP
-        #   PARTIAL -- mix of PASS/OBS/SKIP, no FAIL
-        #   FAIL    -- at least one subtask is FAIL
-        #   SKIP    -- all subtasks are SKIP
-        #
-        # OVERALL ASSESSMENT (append after all tasks)
-        #
-        # overall_assessment:
-        #   verdict: COMPLETE | INCOMPLETE_MINOR_GAPS | INCOMPLETE_MATERIAL_GAPS
-        #   justification: "<one sentence>"
-        #   open_gaps: ["NN.NN", ...]      # FAIL:SIGNIFICANT subtask numbers
-        #   blocking_gaps: ["NN.NN", ...]  # FAIL:MATERIAL subtask numbers
-        #
-        # VERDICT RULES:
-        #   COMPLETE                 -- no FAIL subtasks
-        #   INCOMPLETE_MINOR_GAPS    -- only SIGNIFICANT FAILs, no MATERIAL FAILs
-        #   INCOMPLETE_MATERIAL_GAPS -- at least one MATERIAL FAIL
-        #
-        # EXAMPLE OUTPUT (illustrative, not to be copied verbatim)
-        #
-        # Tasks:
-        #   - - "[PARTIAL] TASK-01: Pre-check -- Scope, Route, and Service Declaration"
-        #     - "[PASS] 01.01 Notification route verified: Entity is a MiFID II
-        #        investment firm; Art. 60 route confirmed per [R1]."
-        #     - "[FAIL:SIGNIFICANT] 01.03 Three-year planning horizon stated: No
-        #        explicit horizon statement found in the document. |
-        #        REF: Art. 1 RTS |
-        #        REMEDIATION: Add an explicit statement that the PoO covers the
-        #        three-year period following the notification date."
-        #     - "[OBS] 01.05 Art. 60 service equivalence verified: Equivalence
-        #        claimed for all services but only service A cites a specific
-        #        MiFID II annex reference. |
-        #        SUGGESTION: Add the specific annex reference for each service."
-        #   - - "[PASS] TASK-02: Introduction and Legal Basis"
-        #     - "[PASS] 02.01 Purpose and supervisory context stated: Document
-        #        clearly identifies itself as a PoO under Art. 60(7)(a) MiCA."
-        #     - "[SKIP] 02.04 Submission correctly framed: Not declared -- correctly omitted."
-        #
-        # overall_assessment:
-        #   verdict: INCOMPLETE_MINOR_GAPS
-        #   justification: "One significant gap identified; no material gaps."
-        #   open_gaps: ["01.03"]
-        #   blocking_gaps: []

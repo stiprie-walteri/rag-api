@@ -1,6 +1,8 @@
+import asyncio
 import os
 import logging
 import tempfile
+import uuid
 import yaml
 from datetime import datetime
 from pathlib import Path
@@ -17,9 +19,11 @@ from app.services.storage.service import (
     DocumentHasNoVersionsError,
     ProjectNotFoundError,
 )
+from app.services.storage.service import DocumentStorageService
 from app.services.pdf.chunking import chunk_pdf
 from app.services.pdf.converter import convert_pdf_to_markdown
 from app.services.evaluation.agent import evaluate_task_with_agent, TaskEvaluationResult
+from app.services.evaluation import state as eval_state
 
 logger = logging.getLogger(__name__)
 
@@ -131,11 +135,44 @@ class DocumentEvaluationRequest(BaseModel):
     tasks: list[list[str]] | None = None
 
 
-class DocumentEvaluationResponse(BaseModel):
+class EvaluationStartedResponse(BaseModel):
+    job_id: str
+    document_id: str
+    version_id: str
+    status: str = "running"
+
+
+class EvaluationStatusResponse(BaseModel):
+    job_id: str
+    status: str
     organization_id: str
     document_id: str
     version_id: str
+    total_tasks: int
+    completed_count: int
+    current_task: list[str] | None = None
     results: list[TaskEvaluationResult]
+    error: str | None = None
+    started_at: datetime
+    updated_at: datetime
+
+
+class DocumentEvaluationSummary(BaseModel):
+    document_id: str
+    title: str | None = None
+    is_analyzing: bool
+    job_id: str | None = None
+    status: str | None = None
+    total_tasks: int | None = None
+    completed_count: int | None = None
+    current_task: list[str] | None = None
+    started_at: datetime | None = None
+    updated_at: datetime | None = None
+    compliance_result: dict | None = None
+
+
+class DocumentEvaluationStatusesResponse(BaseModel):
+    items: list[DocumentEvaluationSummary]
 
 
 def _is_markdown_upload(file: UploadFile) -> bool:
@@ -323,6 +360,113 @@ async def list_documents(
     return DocumentListResponse(items=items, limit=limit, offset=offset, next_offset=next_offset)
 
 
+@router.get(
+    "/api/orgs/{organization_id}/documents/evaluation-statuses",
+    response_model=DocumentEvaluationStatusesResponse,
+)
+async def list_document_evaluation_statuses(
+    organization_id: str,
+    project_id: str | None = Query(default=None),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    service = require_docstore()
+    org_context = await sync_authenticated_org(
+        service,
+        auth,
+        requested_organization_id=organization_id,
+        create_if_missing=False,
+    )
+    try:
+        items_raw = await service.list_documents(
+            organization_id=org_context["organization_id"],
+            actor_user_id=auth.user_id,
+            limit=200,
+            offset=0,
+            project_id=project_id,
+        )
+    except (DocumentAccessDeniedError, OrganizationMismatchError) as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    document_ids = [item["document_id"] for item in items_raw]
+    job_states = await eval_state.get_job_states_for_documents(document_ids)
+
+    summaries: list[DocumentEvaluationSummary] = []
+    for item in items_raw:
+        doc_id = item["document_id"]
+        job = job_states.get(doc_id)
+        compliance = item.get("current_version") and item["current_version"].get("compliance_result")
+
+        if job:
+            summaries.append(DocumentEvaluationSummary(
+                document_id=doc_id,
+                title=item.get("title"),
+                is_analyzing=job["status"] == "running",
+                job_id=job["job_id"],
+                status=job["status"],
+                total_tasks=job["total_tasks"],
+                completed_count=job["completed_count"],
+                current_task=job.get("current_task"),
+                started_at=job["started_at"],
+                updated_at=job["updated_at"],
+                compliance_result=compliance,
+            ))
+        else:
+            summaries.append(DocumentEvaluationSummary(
+                document_id=doc_id,
+                title=item.get("title"),
+                is_analyzing=False,
+                compliance_result=compliance,
+            ))
+
+    return DocumentEvaluationStatusesResponse(items=summaries)
+
+
+class DocumentComplianceResultResponse(BaseModel):
+    document_id: str
+    version_id: str
+    compliance_result: dict | None = None
+
+
+@router.get(
+    "/api/orgs/{organization_id}/documents/{document_id}/compliance",
+    response_model=DocumentComplianceResultResponse,
+)
+async def get_document_compliance_result(
+    organization_id: str,
+    document_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+):
+    service = require_docstore()
+    org_context = await sync_authenticated_org(
+        service,
+        auth,
+        requested_organization_id=organization_id,
+        create_if_missing=False,
+    )
+    try:
+        result = await service.get_document_current(
+            organization_id=org_context["organization_id"],
+            document_id=document_id,
+            actor_user_id=auth.user_id,
+        )
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OrganizationMismatchError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except DocumentAccessDeniedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (DocumentHasNoVersionsError, DocumentVersionNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return DocumentComplianceResultResponse(
+        document_id=document_id,
+        version_id=result["version"]["version_id"],
+        compliance_result=result["version"].get("compliance_result"),
+    )
+
+
 @router.get("/api/orgs/{organization_id}/documents/{document_id}", response_model=DocumentContentResponse)
 async def get_document_current(
     organization_id: str,
@@ -506,9 +650,71 @@ async def get_document_version_chunks(
     )
 
 
+_AGENT_CONCURRENCY = int(os.getenv("AGENT_CONCURRENCY", "3"))
+
+
+async def _run_evaluation_background(
+    *,
+    job_id: str,
+    document_id: str,
+    version_id: str,
+    organization_id: str,
+    tasks_to_run: list[list[str]],
+    chunks_raw: list[dict],
+    system_prompt_override: str | None,
+    references: dict | None,
+    service: DocumentStorageService,
+) -> None:
+    try:
+        results: list[TaskEvaluationResult | None] = [None] * len(tasks_to_run)
+        completed_count = 0
+        state_lock = asyncio.Lock()
+        semaphore = asyncio.Semaphore(_AGENT_CONCURRENCY)
+
+        async def _run_one(idx: int, task_list: list[str]) -> None:
+            nonlocal completed_count
+            async with semaphore:
+                logger.info("[eval] Starting task %d/%d: %s", idx + 1, len(tasks_to_run), task_list[0][:80])
+                async with state_lock:
+                    await eval_state.update_progress(job_id, current_task=task_list, completed_count=completed_count)
+                result = await evaluate_task_with_agent(
+                    task_list=task_list,
+                    chunks=chunks_raw,
+                    system_prompt_override=system_prompt_override,
+                    references=references,
+                )
+                results[idx] = result
+                async with state_lock:
+                    completed_count += 1
+                    await eval_state.append_result(job_id, result=result.model_dump(), completed_count=completed_count)
+
+        await asyncio.gather(*(_run_one(i, task_list) for i, task_list in enumerate(tasks_to_run)))
+
+        await eval_state.complete_job(job_id)
+
+        try:
+            await service.save_compliance_result(
+                organization_id=organization_id,
+                version_id=version_id,
+                result={
+                    "evaluation_job_id": job_id,
+                    "results": [r.model_dump() for r in results if r is not None],
+                },
+            )
+        except Exception as exc:
+            logger.warning("Evaluation job %s: failed to persist results to Postgres: %s", job_id, exc)
+
+    except Exception as exc:
+        logger.exception("Evaluation job %s failed: %s", job_id, exc)
+        await eval_state.fail_job(job_id, str(exc))
+    finally:
+        await eval_state.release_lock(document_id)
+
+
 @router.post(
     "/api/orgs/{organization_id}/documents/{document_id}/versions/{version_no}/evaluate",
-    response_model=DocumentEvaluationResponse,
+    response_model=EvaluationStartedResponse,
+    status_code=202,
 )
 async def evaluate_document_tasks(
     organization_id: str,
@@ -523,6 +729,7 @@ async def evaluate_document_tasks(
 
     tasks_to_run = request.tasks or []
     system_prompt_override = None
+    references = None
 
     if template_id:
         template_data = None
@@ -537,16 +744,23 @@ async def evaluate_document_tasks(
                             break
                 except Exception as exc:
                     logger.warning("Failed to load template %s: %s", file_path, exc)
-                    
+
         if not template_data:
             raise HTTPException(status_code=404, detail=f"Template {template_id} not found.")
-            
+
         system_prompt_override = template_data.get("system_prompt")
+        references = template_data.get("references")
         if not request.tasks:
             tasks_to_run = template_data.get("Tasks", [])
 
     if not tasks_to_run:
         raise HTTPException(status_code=400, detail="No tasks provided and no template tasks found.")
+
+    if await eval_state.is_locked(document_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"An evaluation is already running for document {document_id}.",
+        )
 
     service = require_docstore()
     org_context = await sync_authenticated_org(
@@ -584,20 +798,85 @@ async def evaluate_document_tasks(
     except DocumentAccessDeniedError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    results = []
-    for task_list in tasks_to_run:
-        result = await evaluate_task_with_agent(
-            task_list=task_list,
-            chunks=chunks_raw,
-            system_prompt_override=system_prompt_override
-        )
-        results.append(result)
+    job_id = str(uuid.uuid4())
 
-    return DocumentEvaluationResponse(
+    if not await eval_state.acquire_lock(document_id, job_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"An evaluation is already running for document {document_id}.",
+        )
+
+    await eval_state.start_job(
+        job_id=job_id,
+        document_id=document_id,
         organization_id=org_context["organization_id"],
+        version_id=version_id,
+        total_tasks=len(tasks_to_run),
+    )
+
+    asyncio.create_task(
+        _run_evaluation_background(
+            job_id=job_id,
+            document_id=document_id,
+            version_id=version_id,
+            organization_id=org_context["organization_id"],
+            tasks_to_run=tasks_to_run,
+            chunks_raw=chunks_raw,
+            system_prompt_override=system_prompt_override,
+            references=references,
+            service=service,
+        )
+    )
+
+    return EvaluationStartedResponse(
+        job_id=job_id,
         document_id=document_id,
         version_id=version_id,
-        results=results,
+        status="running",
+    )
+
+
+@router.get(
+    "/api/orgs/{organization_id}/documents/{document_id}/evaluation/status",
+    response_model=EvaluationStatusResponse,
+)
+async def get_evaluation_status(
+    organization_id: str,
+    document_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+):
+    service = require_docstore()
+    org_context = await sync_authenticated_org(
+        service,
+        auth,
+        requested_organization_id=organization_id,
+        create_if_missing=False,
+    )
+
+    job_id = await eval_state.get_current_job_id(document_id)
+    if not job_id:
+        raise HTTPException(status_code=404, detail="No evaluation found for this document.")
+
+    job = await eval_state.get_job_state(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Evaluation job state has expired.")
+
+    if job["organization_id"] != org_context["organization_id"]:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    return EvaluationStatusResponse(
+        job_id=job["job_id"],
+        status=job["status"],
+        organization_id=job["organization_id"],
+        document_id=job["document_id"],
+        version_id=job["version_id"],
+        total_tasks=job["total_tasks"],
+        completed_count=job["completed_count"],
+        current_task=job.get("current_task"),
+        results=[TaskEvaluationResult(**r) for r in job.get("results", [])],
+        error=job.get("error"),
+        started_at=job["started_at"],
+        updated_at=job["updated_at"],
     )
 
 

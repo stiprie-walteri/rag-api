@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import yaml; data = yaml.safe_load\\(open\\('legislation-templates/mica_programme_of_operations_agent_instructions.yaml'\\)\\); print\\('Keys:', list\\(data.keys\\(\\)\\)\\); print\\('Refs:', list\\(data.get\\('references', {}\\).keys\\(\\)\\)\\); print\\('Tasks count:', len\\(data.get\\('Tasks', []\\)\\)\\); print\\('Prompt length:', len\\(data.get\\('system_prompt', ''\\)\\)\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('app/services/evaluation/agent.py', doraise=True\\); print\\('agent.py OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('app/api/routes/documents.py', doraise=True\\); print\\('documents.py OK'\\)\")"
+    ]
+  }
+}
