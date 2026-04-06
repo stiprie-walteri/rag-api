@@ -319,79 +319,90 @@ Please verify that the document contains information about this:
                     len(all_ref_ids),
                     ", ".join(all_ref_ids),
                 )
-            continue
+            if attempt < AGENT_MAX_TOOL_CALLS - 1:
+                continue
 
-        else:
-            final_text = message.content or ""
-            exists = False
-            explanation = "Failed to parse evaluation response."
-            missing_sections: List[str] = []
-            incorrect_sections: List[Dict[str, str]] = []
-
-            try:
-                cleaned = final_text.strip()
-                if "```json" in cleaned:
-                    cleaned = cleaned.split("```json", 1)[1]
-                if "```" in cleaned:
-                    cleaned = cleaned.split("```")[0]
-                cleaned = cleaned.strip()
-
-                start = cleaned.find("{")
-                end = cleaned.rfind("}")
-                if start != -1 and end != -1 and end >= start:
-                    cleaned = cleaned[start : end + 1]
-
-                # Use json-repair to fix any syntax slips from the LLM
-                repaired = repair_json(cleaned)
-                data = json.loads(repaired)
-
-                exists = bool(data.get("exists", False))
-                explanation = str(data.get("explanation", "")) or str(data.get("explanation", final_text))
-
-                ms_val = data.get("Missing Sections", data.get("missing_sections", []))
-                if isinstance(ms_val, list):
-                    missing_sections = [str(x) for x in ms_val if str(x).strip()]
-
-                is_val = data.get("Incorrect Sections", data.get("incorrect_sections", []))
-                if isinstance(is_val, list):
-                    cleaned_sections: List[Dict[str, str]] = []
-                    for item in is_val:
-                        if not isinstance(item, dict):
-                            continue
-                        cleaned_sections.append({
-                            "ID": str(item.get("ID", "")).strip(),
-                            "Quote": str(item.get("Quote", "")).strip(),
-                            "Comment": str(item.get("Comment", "")).strip(),
-                        })
-                    incorrect_sections = [x for x in cleaned_sections if x.get("ID") or x.get("Quote") or x.get("Comment")]
-
-            except Exception as e:
-                logger.warning("[eval] Failed to parse agent JSON output: %s. Error: %s", final_text, e)
-                explanation = final_text
-
-            logger.info(
-                "[eval] Done — steps: %d | exists: %s | missing: %d | incorrect: %d",
-                len(reasoning_steps),
-                exists,
-                len(missing_sections),
-                len(incorrect_sections),
+            # Last attempt exhausted — force a final answer without tools
+            logger.warning(
+                "[eval] Reached max tool call limit (%d) for task: %s — prompting for final answer",
+                AGENT_MAX_TOOL_CALLS,
+                task_label,
             )
-
-            return TaskEvaluationResult(
-                task=task_list,
-                exists=exists,
-                explanation=explanation,
-                missing_sections=missing_sections,
-                incorrect_sections=incorrect_sections,
-                reasoning_steps=reasoning_steps,
+            messages.append({
+                "role": "user",
+                "content": (
+                    "You have reached the maximum number of tool calls. "
+                    "Please provide your final JSON evaluation now without calling any more tools."
+                ),
+            })
+            forced_response = await client.chat.completions.create(
+                model=OPENROUTER_MODEL,
+                messages=messages,
+                tool_choice="none",
+                timeout=AGENT_REQUEST_TIMEOUT,
             )
+            message = forced_response.choices[0].message
 
-    logger.warning("[eval] Reached max tool call limit (%d) for task: %s", AGENT_MAX_TOOL_CALLS, task_label)
-    return TaskEvaluationResult(
-        task=task_list,
-        exists=False,
-        explanation=f"Evaluation failed: Reached maximum tool calls limit ({AGENT_MAX_TOOL_CALLS}).",
-        missing_sections=[],
-        incorrect_sections=[],
-        reasoning_steps=reasoning_steps,
-    )
+        final_text = message.content or ""
+        exists = False
+        explanation = "Failed to parse evaluation response."
+        missing_sections: List[str] = []
+        incorrect_sections: List[Dict[str, str]] = []
+
+        try:
+            cleaned = final_text.strip()
+            if "```json" in cleaned:
+                cleaned = cleaned.split("```json", 1)[1]
+            if "```" in cleaned:
+                cleaned = cleaned.split("```")[0]
+            cleaned = cleaned.strip()
+
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start != -1 and end != -1 and end >= start:
+                cleaned = cleaned[start : end + 1]
+
+            # Use json-repair to fix any syntax slips from the LLM
+            repaired = repair_json(cleaned)
+            data = json.loads(repaired)
+
+            exists = bool(data.get("exists", False))
+            explanation = str(data.get("explanation", "")) or str(data.get("explanation", final_text))
+
+            ms_val = data.get("Missing Sections", data.get("missing_sections", []))
+            if isinstance(ms_val, list):
+                missing_sections = [str(x) for x in ms_val if str(x).strip()]
+
+            is_val = data.get("Incorrect Sections", data.get("incorrect_sections", []))
+            if isinstance(is_val, list):
+                cleaned_sections: List[Dict[str, str]] = []
+                for item in is_val:
+                    if not isinstance(item, dict):
+                        continue
+                    cleaned_sections.append({
+                        "ID": str(item.get("ID", "")).strip(),
+                        "Quote": str(item.get("Quote", "")).strip(),
+                        "Comment": str(item.get("Comment", "")).strip(),
+                    })
+                incorrect_sections = [x for x in cleaned_sections if x.get("ID") or x.get("Quote") or x.get("Comment")]
+
+        except Exception as e:
+            logger.warning("[eval] Failed to parse agent JSON output: %s. Error: %s", final_text, e)
+            explanation = final_text
+
+        logger.info(
+            "[eval] Done — steps: %d | exists: %s | missing: %d | incorrect: %d",
+            len(reasoning_steps),
+            exists,
+            len(missing_sections),
+            len(incorrect_sections),
+        )
+
+        return TaskEvaluationResult(
+            task=task_list,
+            exists=exists,
+            explanation=explanation,
+            missing_sections=missing_sections,
+            incorrect_sections=incorrect_sections,
+            reasoning_steps=reasoning_steps,
+        )

@@ -147,13 +147,28 @@ GetSections(section_indexes) - Use this to retrieve the full text content of spe
                         "tool_call_id": tool_call.id,
                         "content": tool_response_text
                     })
-            continue # Continue loop to let the model process tool output
-        else:
-            # Model generated a final response text
-            logger.info(f"Final evaluation for {task_list[0]}:\n{message.content}\n")
-            break
-    else:
-        logger.warning(f"Agent reached max tool calls ({AGENT_MAX_TOOL_CALLS}) without finishing.")
+            if attempt < AGENT_MAX_TOOL_CALLS - 1:
+                continue  # Let the model process tool output
+
+            # Last attempt exhausted — force a final answer without tools
+            logger.warning(f"Agent reached max tool calls ({AGENT_MAX_TOOL_CALLS}), prompting for final answer.")
+            messages.append({
+                "role": "user",
+                "content": (
+                    "You have reached the maximum number of tool calls. "
+                    "Please provide your final evaluation now without calling any more tools."
+                ),
+            })
+            forced_response = client.chat.completions.create(
+                model=OPENROUTER_MODEL,
+                messages=messages,
+                tool_choice="none",
+            )
+            message = forced_response.choices[0].message
+
+        # Model generated a final response text
+        logger.info(f"Final evaluation for {task_list[0]}:\n{message.content}\n")
+        break
 
 def main():
     parser = argparse.ArgumentParser(description="Run OpenRouter Agent over Tasks.yaml")
