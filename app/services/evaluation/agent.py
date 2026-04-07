@@ -37,6 +37,8 @@ class ReasoningStep(BaseModel):
 
 
 class TaskEvaluationResult(BaseModel):
+    legislation_id: Optional[str] = None
+    legislation_name: Optional[str] = None
     task: List[str]
     exists: bool
     explanation: str

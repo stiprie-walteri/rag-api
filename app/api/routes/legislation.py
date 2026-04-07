@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import yaml
 import tempfile
 import uuid
 from pathlib import Path
@@ -11,6 +10,7 @@ from app.core.auth import AuthContext, get_auth_context
 
 from app.services.legislation.compare import IssueList, call_openai_for_issues, find_sections_for_code, init_openai_from_env
 from app.services.legislation.submission import get_submission_by_codes
+from app.services.legislation.templates import load_legislation_templates
 from app.utils.legislation.find_sections import compute_metrics, load_legislation_unique_sections, parse_submission_codes
 from app.utils.legislation.get_legislation_by_section import get_subsections_for_code, load_legislation
 from app.services.legislation.parser import LegislationCodeParser
@@ -176,17 +176,7 @@ class TemplatesResponse(BaseModel):
 
 @router.get("/api/legislation/templates", response_model=TemplatesResponse)
 async def list_legislation_templates(auth: AuthContext = Depends(get_auth_context)):
-    templates_dir = Path(os.getenv("LEGISLATION_TEMPLATES_DIR", "legislation-templates"))
     templates = []
-    if templates_dir.exists() and templates_dir.is_dir():
-        for file_path in templates_dir.glob("*.yaml"):
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    data = yaml.safe_load(f)
-                    name = data.get("name", file_path.stem)
-                    template_id_val = data.get("id", file_path.stem)
-                    templates.append(TemplateItem(id=template_id_val, name=name))
-            except Exception as exc:
-                logger.warning("Failed to load template %s: %s", file_path, exc)
+    for template in load_legislation_templates():
+        templates.append(TemplateItem(id=template["id"], name=template["name"]))
     return TemplatesResponse(templates=templates)
-
