@@ -63,6 +63,14 @@ class ProjectNotFoundError(DocumentStorageError):
     pass
 
 
+def _normalize_legislation_template_ids(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    return []
+
+
 def _parse_bool(value: str | None, *, default: bool) -> bool:
     if value is None:
         return default
@@ -514,6 +522,7 @@ class DocumentStorageService:
                 d.updated_at,
                 f.name AS project_name,
                 f.description AS project_description,
+                f.legislation_template_ids,
                 f.created_at AS project_created_at,
                 f.created_by AS project_created_by,
                 f.updated_at AS project_updated_at,
@@ -545,6 +554,8 @@ class DocumentStorageService:
                 f.organization_id,
                 f.name,
                 f.description AS description,
+                f.legislation_template_ids,
+                f.compliance_result,
                 f.created_at,
                 f.created_by,
                 f.updated_at,
@@ -672,6 +683,9 @@ class DocumentStorageService:
                     "organization_id": row["organization_id"],
                     "name": row.get("project_name"),
                     "description": row.get("project_description"),
+                    "legislation_template_ids": _normalize_legislation_template_ids(
+                        row.get("legislation_template_ids")
+                    ),
                     "created_at": row.get("project_created_at"),
                     "created_by": row.get("project_created_by"),
                     "updated_at": row.get("project_updated_at"),
@@ -694,6 +708,9 @@ class DocumentStorageService:
             "organization_id": row["organization_id"],
             "name": row["name"],
             "description": row.get("description"),
+            "legislation_template_ids": _normalize_legislation_template_ids(
+                row.get("legislation_template_ids")
+            ),
             "created_at": row["created_at"],
             "created_by": row["created_by"],
             "updated_at": row["updated_at"],
@@ -1341,6 +1358,7 @@ class DocumentStorageService:
                         d.current_version_id,
                         f.name AS project_name,
                         f.description AS project_description,
+                        f.legislation_template_ids,
                         f.created_at AS project_created_at,
                         f.created_by AS project_created_by,
                         f.updated_at AS project_updated_at,
@@ -1420,6 +1438,9 @@ class DocumentStorageService:
                             "organization_id": row["organization_id"],
                             "name": row.get("project_name"),
                             "description": row.get("project_description"),
+                            "legislation_template_ids": _normalize_legislation_template_ids(
+                                row.get("legislation_template_ids")
+                            ),
                             "created_at": row.get("project_created_at"),
                             "created_by": row.get("project_created_by"),
                             "updated_at": row.get("project_updated_at"),
@@ -1938,6 +1959,150 @@ class DocumentStorageService:
                     if cur.rowcount == 0:
                         raise DocumentNotFoundError(f"Version {version_id} not found")
 
+    async def save_project_compliance_result(
+        self,
+        *,
+        organization_id: str,
+        project_id: str,
+        result: dict[str, Any],
+    ) -> None:
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        """
+                        UPDATE folders
+                           SET compliance_result = %s,
+                               updated_at = NOW()
+                         WHERE id = %s
+                           AND organization_id = %s;
+                        """,
+                        (Json(result), project_id, organization_id),
+                    )
+                    if cur.rowcount == 0:
+                        raise ProjectNotFoundError(f"Project {project_id} not found")
+
+    async def get_project_compliance_result(
+        self,
+        *,
+        organization_id: str,
+        project_id: str,
+        actor_user_id: str,
+    ) -> dict[str, Any] | None:
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.cursor() as cur:
+                await self._ensure_user_in_organization(
+                    cur, organization_id=organization_id, user_id=actor_user_id
+                )
+                row = await self._assert_project_in_org(
+                    cur,
+                    organization_id=organization_id,
+                    project_id=project_id,
+                )
+        return row.get("compliance_result")
+
+    async def get_project_evaluation_context(
+        self,
+        *,
+        organization_id: str,
+        project_id: str,
+        actor_user_id: str,
+    ) -> dict[str, Any]:
+        async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.cursor() as cur:
+                organization_role = await self._ensure_user_in_organization(
+                    cur,
+                    organization_id=organization_id,
+                    user_id=actor_user_id,
+                )
+                project_row = await self._assert_project_in_org(
+                    cur,
+                    organization_id=organization_id,
+                    project_id=project_id,
+                )
+
+                await cur.execute(
+                    """
+                    SELECT
+                        d.id AS document_id,
+                        d.title,
+                        d.current_version_id AS version_id,
+                        v.version_no,
+                        dc.id AS chunk_id,
+                        dc.chunk_level,
+                        dc.title AS chunk_title,
+                        dc.start_page,
+                        dc.end_page,
+                        dc.text_content,
+                        CASE
+                            WHEN %s = 'owner' THEN 'owner'
+                            ELSE dm.role
+                        END AS my_role
+                    FROM documents d
+                    LEFT JOIN document_memberships dm
+                           ON dm.organization_id = d.organization_id
+                          AND dm.document_id = d.id
+                          AND dm.user_id = %s
+                    LEFT JOIN document_versions v
+                           ON v.id = d.current_version_id
+                          AND v.organization_id = d.organization_id
+                    LEFT JOIN document_chunks dc
+                           ON dc.organization_id = d.organization_id
+                          AND dc.document_id = d.id
+                          AND dc.version_id = d.current_version_id
+                    WHERE d.organization_id = %s
+                      AND d.folder_id = %s
+                      AND (%s = 'owner' OR dm.user_id IS NOT NULL)
+                    ORDER BY d.updated_at DESC, dc.start_page ASC, dc.created_at ASC;
+                    """,
+                    (
+                        organization_role,
+                        actor_user_id,
+                        organization_id,
+                        project_id,
+                        organization_role,
+                    ),
+                )
+                rows = await cur.fetchall()
+
+        documents_by_id: dict[str, dict[str, Any]] = {}
+        chunks: list[dict[str, Any]] = []
+
+        for row in rows:
+            document_id = str(row["document_id"])
+            if document_id not in documents_by_id:
+                documents_by_id[document_id] = {
+                    "document_id": document_id,
+                    "title": row.get("title"),
+                    "version_id": row.get("version_id"),
+                    "version_no": row.get("version_no"),
+                }
+
+            if row.get("chunk_id") is None:
+                continue
+
+            document_title = row.get("title") or f"Document {document_id}"
+            chunk_title = row.get("chunk_title") or "Unnamed Section"
+            chunks.append(
+                {
+                    "id": str(row["chunk_id"]),
+                    "organization_id": organization_id,
+                    "document_id": document_id,
+                    "version_id": row.get("version_id"),
+                    "chunk_level": row.get("chunk_level", 1),
+                    "title": f"{document_title} :: {chunk_title}",
+                    "start_page": row.get("start_page", 1),
+                    "end_page": row.get("end_page", 1),
+                    "text_content": row.get("text_content", ""),
+                }
+            )
+
+        return {
+            "project": self._map_project_row(project_row),
+            "documents": list(documents_by_id.values()),
+            "chunks": chunks,
+        }
+
     # ------------------------------------------------------------------
     # Project management
     # ------------------------------------------------------------------
@@ -1948,6 +2113,7 @@ class DocumentStorageService:
         organization_id: str,
         name: str,
         description: str | None,
+        legislation_template_ids: list[str] | None,
         actor_user_id: str,
     ) -> dict[str, Any]:
         project_name = name.strip()
@@ -1970,15 +2136,17 @@ class DocumentStorageService:
                             organization_id,
                             name,
                             description,
+                            legislation_template_ids,
                             created_by,
                             updated_by
                         )
-                        VALUES (%s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s)
                         RETURNING
                             id,
                             organization_id,
                             name,
                             description,
+                            legislation_template_ids,
                             created_at,
                             created_by,
                             updated_at,
@@ -1989,6 +2157,7 @@ class DocumentStorageService:
                             organization_id,
                             project_name,
                             project_description,
+                            Json(legislation_template_ids or []),
                             actor_user_id,
                             actor_user_id,
                         ),
@@ -2017,6 +2186,7 @@ class DocumentStorageService:
                         f.organization_id,
                         f.name,
                         f.description AS description,
+                        f.legislation_template_ids,
                         f.created_at,
                         f.created_by,
                         f.updated_at,
@@ -2032,6 +2202,7 @@ class DocumentStorageService:
                         f.organization_id,
                         f.name,
                         f.description,
+                        f.legislation_template_ids,
                         f.created_at,
                         f.created_by,
                         f.updated_at,
@@ -2072,8 +2243,9 @@ class DocumentStorageService:
         actor_user_id: str,
         name: str | None = None,
         description: str | None = None,
+        legislation_template_ids: list[str] | None = None,
     ) -> dict[str, Any]:
-        if name is None and description is None:
+        if name is None and description is None and legislation_template_ids is None:
             raise ValueError("At least one project field must be provided.")
 
         project_name = name.strip() if name is not None else None
@@ -2104,6 +2276,10 @@ class DocumentStorageService:
                                 WHEN %s THEN %s
                                 ELSE description
                             END,
+                            legislation_template_ids = CASE
+                                WHEN %s THEN %s
+                                ELSE legislation_template_ids
+                            END,
                             updated_at = NOW(),
                             updated_by = %s
                         WHERE id = %s
@@ -2113,6 +2289,7 @@ class DocumentStorageService:
                             organization_id,
                             name,
                             description,
+                            legislation_template_ids,
                             created_at,
                             created_by,
                             updated_at,
@@ -2128,6 +2305,8 @@ class DocumentStorageService:
                             project_name,
                             description is not None,
                             project_description,
+                            legislation_template_ids is not None,
+                            Json(legislation_template_ids or []),
                             actor_user_id,
                             project_id,
                             organization_id,

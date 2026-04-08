@@ -1,4 +1,6 @@
 # Environment variables
+analysis-runs/
+
 .env
 .env.storage
 .venv

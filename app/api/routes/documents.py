@@ -3,9 +3,7 @@ import os
 import logging
 import tempfile
 import uuid
-import yaml
 from datetime import datetime
-from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
@@ -24,6 +22,7 @@ from app.services.pdf.chunking import chunk_pdf
 from app.services.pdf.converter import convert_pdf_to_markdown
 from app.services.evaluation.agent import evaluate_task_with_agent, TaskEvaluationResult
 from app.services.evaluation import state as eval_state
+from app.services.legislation.templates import get_legislation_template
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +42,7 @@ class ProjectSummary(BaseModel):
     organization_id: str
     name: str
     description: str | None = None
+    legislation_template_ids: list[str] = []
     created_at: datetime
     created_by: str
     updated_at: datetime
@@ -680,52 +680,105 @@ async def get_document_version_chunks(
 _AGENT_CONCURRENCY = int(os.getenv("AGENT_CONCURRENCY", "3"))
 
 
+def _build_template_run(
+    *,
+    template_data: dict,
+    override_tasks: list[list[str]] | None = None,
+) -> dict:
+    tasks = override_tasks if override_tasks is not None else (template_data.get("Tasks") or [])
+    return {
+        "template_id": template_data["id"],
+        "template_name": template_data["name"],
+        "tasks": tasks,
+        "system_prompt_override": template_data.get("system_prompt"),
+        "references": template_data.get("references"),
+    }
+
+
 async def _run_evaluation_background(
     *,
     job_id: str,
     document_id: str,
     version_id: str,
     organization_id: str,
-    tasks_to_run: list[list[str]],
+    evaluation_runs: list[dict],
     chunks_raw: list[dict],
-    system_prompt_override: str | None,
-    references: dict | None,
     service: DocumentStorageService,
 ) -> None:
     try:
-        results: list[TaskEvaluationResult | None] = [None] * len(tasks_to_run)
+        total_tasks = sum(len(run["tasks"]) for run in evaluation_runs)
+        results: list[TaskEvaluationResult | None] = [None] * total_tasks
         completed_count = 0
         state_lock = asyncio.Lock()
         semaphore = asyncio.Semaphore(_AGENT_CONCURRENCY)
+        result_index = 0
+        run_summaries: list[dict] = []
+        scheduled_runs: list[tuple[int, dict, list[str]]] = []
 
-        async def _run_one(idx: int, task_list: list[str]) -> None:
+        for run in evaluation_runs:
+            run_result_start = result_index
+            for task_list in run["tasks"]:
+                scheduled_runs.append((result_index, run, task_list))
+                result_index += 1
+            run_summaries.append(
+                {
+                    "template_id": run["template_id"],
+                    "template_name": run["template_name"],
+                    "task_count": len(run["tasks"]),
+                    "result_indexes": list(range(run_result_start, result_index)),
+                }
+            )
+
+        async def _run_one(idx: int, run: dict, task_list: list[str]) -> None:
             nonlocal completed_count
             async with semaphore:
-                logger.info("[eval] Starting task %d/%d: %s", idx + 1, len(tasks_to_run), task_list[0][:80])
+                logger.info(
+                    "[eval] Starting task %d/%d for %s: %s",
+                    idx + 1,
+                    total_tasks,
+                    run["template_id"],
+                    task_list[0][:80],
+                )
                 async with state_lock:
                     await eval_state.update_progress(job_id, current_task=task_list, completed_count=completed_count)
                 result = await evaluate_task_with_agent(
                     task_list=task_list,
                     chunks=chunks_raw,
-                    system_prompt_override=system_prompt_override,
-                    references=references,
+                    system_prompt_override=run.get("system_prompt_override"),
+                    references=run.get("references"),
                 )
+                result.legislation_id = run["template_id"]
+                result.legislation_name = run["template_name"]
                 results[idx] = result
                 async with state_lock:
                     completed_count += 1
                     await eval_state.append_result(job_id, result=result.model_dump(), completed_count=completed_count)
 
-        await asyncio.gather(*(_run_one(i, task_list) for i, task_list in enumerate(tasks_to_run)))
+        await asyncio.gather(*(_run_one(i, run, task_list) for i, run, task_list in scheduled_runs))
 
         await eval_state.complete_job(job_id)
 
         try:
+            final_results = [r.model_dump() for r in results if r is not None]
             await service.save_compliance_result(
                 organization_id=organization_id,
                 version_id=version_id,
                 result={
                     "evaluation_job_id": job_id,
-                    "results": [r.model_dump() for r in results if r is not None],
+                    "legislations": [
+                        {
+                            "template_id": run_summary["template_id"],
+                            "template_name": run_summary["template_name"],
+                            "task_count": run_summary["task_count"],
+                            "results": [
+                                results[idx].model_dump()
+                                for idx in run_summary["result_indexes"]
+                                if results[idx] is not None
+                            ],
+                        }
+                        for run_summary in run_summaries
+                    ],
+                    "results": final_results,
                 },
             )
         except Exception as exc:
@@ -753,35 +806,6 @@ async def evaluate_document_tasks(
 ):
     if version_no <= 0:
         raise HTTPException(status_code=400, detail="version_no must be greater than 0.")
-
-    tasks_to_run = request.tasks or []
-    system_prompt_override = None
-    references = None
-
-    if template_id:
-        template_data = None
-        templates_dir = Path(os.getenv("LEGISLATION_TEMPLATES_DIR", "legislation-templates"))
-        if templates_dir.exists() and templates_dir.is_dir():
-            for file_path in templates_dir.glob("*.yaml"):
-                try:
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        data = yaml.safe_load(f)
-                        if data.get("id", file_path.stem) == template_id:
-                            template_data = data
-                            break
-                except Exception as exc:
-                    logger.warning("Failed to load template %s: %s", file_path, exc)
-
-        if not template_data:
-            raise HTTPException(status_code=404, detail=f"Template {template_id} not found.")
-
-        system_prompt_override = template_data.get("system_prompt")
-        references = template_data.get("references")
-        if not request.tasks:
-            tasks_to_run = template_data.get("Tasks", [])
-
-    if not tasks_to_run:
-        raise HTTPException(status_code=400, detail="No tasks provided and no template tasks found.")
 
     if await eval_state.is_locked(document_id):
         raise HTTPException(
@@ -814,6 +838,41 @@ async def evaluate_document_tasks(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     version_id = ver_result["version"]["version_id"]
+    project = ver_result["document"].get("project") or {}
+    project_template_ids = project.get("legislation_template_ids") or []
+
+    evaluation_runs: list[dict] = []
+    if template_id:
+        template_data = get_legislation_template(template_id)
+        if not template_data:
+            raise HTTPException(status_code=404, detail=f"Template {template_id} not found.")
+        evaluation_runs.append(_build_template_run(template_data=template_data, override_tasks=request.tasks))
+    elif request.tasks:
+        evaluation_runs.append(
+            {
+                "template_id": "manual",
+                "template_name": "Manual Tasks",
+                "tasks": request.tasks,
+                "system_prompt_override": None,
+                "references": None,
+            }
+        )
+    else:
+        for project_template_id in project_template_ids:
+            template_data = get_legislation_template(project_template_id)
+            if not template_data:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Project references unknown legislation template {project_template_id}.",
+                )
+            evaluation_runs.append(_build_template_run(template_data=template_data))
+
+    total_tasks = sum(len(run["tasks"]) for run in evaluation_runs)
+    if total_tasks == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="No tasks provided and no project legislation templates are configured.",
+        )
 
     try:
         chunks_raw = await service.get_document_chunks(
@@ -835,10 +894,12 @@ async def evaluate_document_tasks(
 
     await eval_state.start_job(
         job_id=job_id,
-        document_id=document_id,
+        target_key=document_id,
         organization_id=org_context["organization_id"],
+        target_type="document",
+        target_id=document_id,
         version_id=version_id,
-        total_tasks=len(tasks_to_run),
+        total_tasks=total_tasks,
     )
 
     asyncio.create_task(
@@ -847,10 +908,8 @@ async def evaluate_document_tasks(
             document_id=document_id,
             version_id=version_id,
             organization_id=org_context["organization_id"],
-            tasks_to_run=tasks_to_run,
+            evaluation_runs=evaluation_runs,
             chunks_raw=chunks_raw,
-            system_prompt_override=system_prompt_override,
-            references=references,
             service=service,
         )
     )

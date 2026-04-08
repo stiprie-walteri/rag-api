@@ -78,6 +78,10 @@ Default endpoints from this compose stack:
 - `PATCH /api/orgs/{organization_id}/projects/{project_id}`
 - `DELETE /api/orgs/{organization_id}/projects/{project_id}`
 - `GET /api/orgs/{organization_id}/projects/{project_id}/documents`
+- `POST /api/orgs/{organization_id}/projects/{project_id}/evaluate`
+- `GET /api/orgs/{organization_id}/projects/{project_id}/evaluation/status`
+- `GET /api/orgs/{organization_id}/projects/{project_id}/compliance`
+- `GET /api/legislation/templates`
 - `POST /api/documents/upload`
 - `GET /api/orgs/{organization_id}/documents`
 - `PATCH /api/orgs/{organization_id}/documents/{document_id}/project`
@@ -87,6 +91,22 @@ Default endpoints from this compose stack:
 - `POST /api/admin/docstore/gc` (GC placeholder hook)
 
 Each authenticated Clerk user gets exactly one private internal workspace. There is no cross-user document sharing in the current model.
+
+## Project legislation selection
+- Use `GET /api/legislation/templates` to list the available YAML-backed legislation templates.
+- `POST /api/orgs/{organization_id}/projects` and `PATCH /api/orgs/{organization_id}/projects/{project_id}` accept `legislation_template_ids: string[]`.
+- Project responses now include `legislation_template_ids`.
+- `POST /api/orgs/{organization_id}/documents/{document_id}/versions/{version_no}/evaluate` will run all legislation templates configured on the document's project when `template_id` is omitted.
+- If `template_id` is provided explicitly, only that legislation template is executed.
+
+## Project-wide evaluation
+- `POST /api/orgs/{organization_id}/projects/{project_id}/evaluate` evaluates the whole project across all current project documents.
+- The evaluator combines the extracted content of all documents in the project into one analysis corpus, so tasks can be satisfied using evidence spread across multiple files.
+- If the request body omits `template_ids`, the backend uses the project's configured `legislation_template_ids`.
+- `GET /api/orgs/{organization_id}/projects/{project_id}/evaluation/status` returns the current async run state plus the full saved grouped result when available.
+- `GET /api/orgs/{organization_id}/projects/{project_id}/compliance` returns the latest persisted project-wide analysis result.
+- The project evaluation process continues server-side even if the frontend tab closes or stops polling.
+- The status endpoint now includes loader-friendly fields: `status_message`, `progress_percent`, and `activity`.
 
 ## Upload request shape
 `multipart/form-data`:
