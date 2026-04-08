@@ -396,7 +396,7 @@ async def list_document_evaluation_statuses(
     for item in items_raw:
         doc_id = item["document_id"]
         job = job_states.get(doc_id)
-        compliance = item.get("current_version") and item["current_version"].get("compliance_result")
+        compliance = _augment_compliance_result(item.get("current_version") and item["current_version"].get("compliance_result"))
 
         if job:
             summaries.append(DocumentEvaluationSummary(
@@ -429,6 +429,25 @@ class DocumentComplianceResultResponse(BaseModel):
     compliance_result: dict | None = None
 
 
+def _augment_compliance_result(comp_result: dict | None) -> dict | None:
+    if not comp_result or "results" not in comp_result:
+        return comp_result
+    
+    results_list = comp_result["results"]
+    total_tasks = len(results_list)
+    if total_tasks > 0:
+        correct_count = 0
+        for r in results_list:
+            is_correct = bool(r.get("exists")) and not r.get("missing_sections") and not r.get("incorrect_sections")
+            r["is_correct"] = is_correct
+            if is_correct:
+                correct_count += 1
+        
+        incorrect_tasks = total_tasks - correct_count
+        comp_result["correctness_score"] = int(((total_tasks - incorrect_tasks) / total_tasks) * 100)
+    
+    return comp_result
+
 @router.get(
     "/api/orgs/{organization_id}/documents/{document_id}/compliance",
     response_model=DocumentComplianceResultResponse,
@@ -460,10 +479,12 @@ async def get_document_compliance_result(
     except (DocumentHasNoVersionsError, DocumentVersionNotFoundError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    comp_result = _augment_compliance_result(result["version"].get("compliance_result"))
+
     return DocumentComplianceResultResponse(
         document_id=document_id,
         version_id=result["version"]["version_id"],
-        compliance_result=result["version"].get("compliance_result"),
+        compliance_result=comp_result,
     )
 
 
@@ -495,9 +516,12 @@ async def get_document_current(
     except (DocumentHasNoVersionsError, DocumentVersionNotFoundError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    version_metadata = _to_version_metadata(result["version"])
+    version_metadata.compliance_result = _augment_compliance_result(version_metadata.compliance_result)
+
     return DocumentContentResponse(
         document=_to_document_metadata(result["document"]),
-        version=_to_version_metadata(result["version"]),
+        version=version_metadata,
         content_md=result["content_bytes"].decode("utf-8"),
     )
 
@@ -538,9 +562,12 @@ async def get_document_version(
     except DocumentVersionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    version_metadata = _to_version_metadata(result["version"])
+    version_metadata.compliance_result = _augment_compliance_result(version_metadata.compliance_result)
+
     return DocumentContentResponse(
         document=_to_document_metadata(result["document"]),
-        version=_to_version_metadata(result["version"]),
+        version=version_metadata,
         content_md=result["content_bytes"].decode("utf-8"),
     )
 
