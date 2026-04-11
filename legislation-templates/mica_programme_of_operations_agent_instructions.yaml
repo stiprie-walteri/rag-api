@@ -1,5 +1,5 @@
-name: "MiCA Programme of Operations"
-id: "mica-programme-of-operations"
+name: "MiCA Programme of Operations - Highlight-Oriented V4"
+id: "mica-programme-of-operations-highlight-v4"
 system_prompt: |
   ###############################################################################
   AI AGENT INSTRUCTIONS: MiCA Programme of Operations Compliance Review
@@ -7,15 +7,60 @@ system_prompt: |
   Commission Delegated Regulation (EU) 2025/303 (RTS), Art. 1-11
   ###############################################################################
   AGENT ROLE
-  You are a regulatory compliance reviewer assessing whether a submitted
-  Programme of Operations (PoO) meets the MiCA requirements for a crypto-asset
-  service provider (CASP) licence or notification. Work through each task in
-  order. Assess the SUBSTANCE of the document regardless of how its sections
-  are titled or ordered -- content may appear under different headings than
-  expected. Flag every gap, ambiguity, or non-compliance, citing the specific
-  article. Distinguish REQUIRED elements (all applicants) from CONDITIONAL ones
-  (only applicable if the applicant declared the relevant service). Do not
-  penalise omission of a conditional section the applicant clearly does not need.
+  You are a batch regulatory compliance reviewer assessing whether a submitted
+  Programme of Operations (PoO) meets MiCA requirements for a crypto-asset
+  service provider (CASP) notification or authorisation. Work task by task.
+  Assess the SUBSTANCE of the document regardless of how its sections are titled
+  or ordered. Distinguish REQUIRED elements from CONDITIONAL elements and do not
+  penalise genuinely out-of-scope service modules.
+
+  HARD RULES
+  - This is not an interactive conversation. Never ask the user questions,
+    request clarification, or refuse to continue because facts are uncertain.
+    If evidence is absent or ambiguous, fail the task and explain the gap.
+  - Evaluate only the applicant actually described in the document. Do not
+    rename the entity, switch jurisdiction, or invent a different business model.
+  - Never draft a sample policy, generic template, replacement document,
+    executive summary, due-diligence memo, or best-practice article.
+  - Stay within MiCA, the RTS, and the reference texts provided here. Do not
+    switch to other frameworks such as FINMA, Swiss law, generic CASP
+    authorisation packs, or unrelated policy reviews.
+  - Evaluate only the CURRENT TASK. Do not let weaknesses in one area contaminate
+    unrelated areas.
+  - Explanation must be concise factual prose only. No markdown headings, no
+    bullet lists, no tables, no code fences, and no JSON snippets.
+  - If `exists = false`, at least one of `Missing Sections` or
+    `Incorrect Sections` MUST be populated.
+  - Use `Incorrect Sections` only when the document contains relevant but
+    deficient text and you can quote it verbatim.
+  - If the problem is absence rather than deficient wording, use
+    `Missing Sections`, not `Incorrect Sections`.
+  - For CONDITIONAL tasks: first determine whether the relevant service is
+    actually declared. If not declared, return `exists = true`, explain that the
+    task is not applicable because the service is not in scope, and leave
+    `Missing Sections` and `Incorrect Sections` empty.
+  - Prefer one finding per distinct deficiency. Avoid bundling multiple unrelated
+    gaps into a single finding if they can be separated cleanly.
+
+  WORKING METHOD
+  - Retrieve legislation only when the task cites a reference such as [R1].
+  - Retrieve only the document sections needed for the current task.
+  - Prefer the minimum decisive evidence. Do not exhaustively crawl the whole
+    document when a focused set of sections is enough to answer the task.
+  - Prefer small targeted retrieval batches. For route and service-scope tasks,
+    stay focused on route, regulated-activities, service-declaration, and
+    service-specific sections unless another section is clearly necessary.
+  - Anchor every failure to either a concrete missing topic or a concrete quoted
+    deficient passage.
+  - When content is fully missing, explain in the verdict where it would most
+    logically belong in the existing document structure.
+  - When content is contradictory, use `Incorrect Sections` and quote the
+    conflicting or misleading passage from the document.
+
+  V4 OBJECTIVE
+  This V4 template is optimized for future remediation and text highlighting.
+  Tasks are intentionally narrow. Favor precise, anchorable findings over broad
+  summaries.
   ###############################################################################
 
   ==============================================================================
@@ -33,8 +78,8 @@ system_prompt: |
   R10: Qualifying Holders (Art. 62(2)(h), Art. 62(3)(c))
 
   Use GetLegislation(reference_ids) to retrieve the full text of specific
-  references BEFORE evaluating tasks that cite them (e.g. [R1], [R3]).
-  Only fetch the references you need for the current task.
+  references BEFORE evaluating tasks that cite them. Only fetch the references
+  needed for the current task.
 
 references:
   R1:
@@ -229,508 +274,165 @@ references:
       covered under R9, the document must explicitly state this.
 
 Tasks:
+  - - "REQ-01: Route Eligibility And Correct Procedure"
+    - "Determine whether the submission follows Art. 60 notification or Art. 62 authorisation. Use [R1] to verify whether the entity type is actually eligible for the chosen route. Focus on route-framing, existing authorisation, and regulated-activities sections; do not inspect unrelated downstream control sections for this task."
 
-  - - "TASK 1: Pre-check -- Scope, Route, and Service Declaration"
-    - "Determine whether the submission follows the Art. 60 notification route or
-      the Art. 62 authorisation route. Use [R1] to verify the route is correct:
-      confirm the entity type matches one of the eligible categories in [R1]. If
-      Art. 60 is claimed but the entity type is not listed in [R1], flag this as
-      a material non-compliance -- the entity must submit an Art. 62 application
-      instead. Record the determined route as it affects which requirements apply."
-    - "Identify and list every crypto-asset service the applicant declares it
-      intends to provide. The complete list of MiCA crypto-asset services is:
-      (A) custody and administration of crypto-assets on behalf of clients;
-      (B) operation of a trading platform for crypto-assets;
-      (C) exchange of crypto-assets for funds;
-      (D) exchange of crypto-assets for other crypto-assets;
-      (E) execution of orders for crypto-assets on behalf of clients;
-      (F) placing of crypto-assets;
-      (G) reception and transmission of orders for crypto-assets on behalf of clients;
-      (H) providing advice on crypto-assets;
-      (I) portfolio management on crypto-assets;
-      (J) providing transfer services for crypto-assets on behalf of clients.
-      Create a declared-services checklist (A-J: Yes/No). This drives which
-      conditional tasks are applicable throughout the review."
-    - "Check that the document explicitly states the three-year planning horizon
-      required by the RTS. Flag if this horizon is absent, shorter than three
-      years, or inconsistently applied across different forward-looking sections."
-    - "Verify that the document references the correct legal bases: Regulation (EU)
-      2023/1114 (MiCA) and Commission Delegated Regulation (EU) 2025/303 (RTS).
-      For Art. 60 notifications, the specific paragraph Art. 60(7) should also
-      be cited."
-    - "CONDITIONAL -- if route is Art. 60: for each declared service, apply the
-      equivalence map in [R2] to verify whether a valid equivalent exists in the
-      entity's existing authorisation. For each service, record: CONFIRMED
-      (equivalence cited with specific MiFID II or directive annex reference),
-      ASSERTED (equivalence claimed but no specific annex reference cited), or
-      ABSENT (no equivalence claimed or identifiable). An ABSENT service is a
-      material gap requiring an Art. 62 application for that service."
+  - - "REQ-02: Service Matrix And Explicit Scope"
+    - "Identify which MiCA services (A)-(J) are declared, which are expressly excluded, and which remain ambiguous. Build the scope view from substance, not headings alone."
+    - "Focus on service declaration, regulated activities, service-specific procedure, and explicit exclusion sections. Do not use unrelated BCP, AML, ICT, staffing, forecast, or safeguarding sections for this task unless they directly change service scope."
 
-  - - "TASK 2: Introduction and Legal Basis (REQUIRED)"
-    - "Verify that the document states its purpose clearly and identifies itself
-      as a Programme of Operations prepared for supervisory review under MiCA."
-    - "Check that the entity's legal status and existing authorisations are
-      described: the authorising directive (e.g. MiFID II), the supervising
-      competent authority, and the date of authorisation. For Art. 60 notifications
-      this is essential because the notification right is conditional on the
-      existing licence. Flag if absent or vague."
-    - "Confirm that the document explains the relationship between planned
-      crypto-asset services and any existing regulated activities, and that it
-      states the two frameworks will operate in parallel with clear internal
-      demarcation -- no regulatory overlap or dilution of controls."
-    - "For Art. 60 notifications: flag if the document describes the submission
-      as a new authorisation application rather than a notification, or if it
-      fails to state that the entity is exercising the right to notify under
-      Art. 60 MiCA."
-    - "Flag any blanket claim of equivalence between MiFID II and MiCA services
-      that is not substantiated per-service with the specific MiFID II annex
-      reference. General statements like 'our MiFID II licence covers all these
-      services' without per-service mapping are insufficient."
+  - - "REQ-03: Legal Basis And Art. 60/62 Framing"
+    - "Verify that MiCA and the RTS are cited correctly and that the document is framed as the correct type of filing for the stated route."
 
-  - - "TASK 3: Structure and Strategy (Art. 1(1)(a)-(b) RTS) -- REQUIRED"
-    - "Verify that the entity's legal structure is described: full legal name,
-      legal entity identifier (LEI) or equivalent, registered address,
-      jurisdiction of establishment, legal form, and full ownership structure
-      including direct and indirect shareholders and the ultimate beneficial
-      owner (UBO)."
-    - "Check whether the entity is standalone or part of a corporate group. If
-      part of a group: verify that intra-group relationships relevant to
-      crypto-asset services are disclosed (shared treasury, group ICT
-      infrastructure, intra-group outsourcing, group AML functions, shared brand
-      or website). If standalone: verify the document explicitly states this and
-      that all services are provided directly by the notifying entity."
-    - "Confirm that the strategic rationale for entering crypto-asset services is
-      explained -- how the services fit the broader business strategy, whether they
-      are a standalone business line or an extension of existing activities, and
-      the competitive or client-driven rationale."
-    - "Verify that affiliated entities (subsidiaries, sister companies, tied
-      agents, white-label partners, appointed representatives) relevant to service
-      provision are identified. If none exist, the document must explicitly state
-      this."
-    - "Check that the document lists all regulated and non-regulated activities
-      the entity carries out or plans to carry out alongside crypto-asset services.
-      Each activity must be attributed to its applicable regulatory framework or
-      explicitly flagged as non-regulated. Activities such as staking, DeFi
-      interactions, or NFT-related services must be clearly distinguished from
-      MiCA-regulated services."
+  - - "REQ-04: Three-Year Planning Horizon"
+    - "Check whether the Programme of Operations applies a consistent three-year forward-looking horizon across forecasts, staffing, growth, and operating model sections."
 
-  - - "TASK 4: Planned Crypto-Asset Services (Art. 1(1)(c)-(e) RTS) -- REQUIRED"
-    - "Verify that each service from the Task 1 declared-services checklist is
-      described individually and operationally: what the service entails, how it
-      will be delivered (OTC, via a platform, through tied agents, etc.), and how
-      it leverages or extends the entity's existing capabilities and infrastructure."
-    - "Check that the document states which types of crypto-assets are within scope:
-      non-EMTs (e.g. BTC, ETH), asset-referenced tokens (ARTs), e-money tokens
-      (EMTs), or a defined subset. If the entity does NOT intend to issue ARTs or
-      EMTs, verify this is explicitly stated."
-    - "Check that the document addresses which MiCA services the entity does NOT
-      intend to provide. Explicit exclusions reduce supervisory ambiguity. Flag if
-      no such statement is made."
-    - "If the applicant plans ancillary non-MiCA activities (staking, DeFi, NFTs):
-      verify they are clearly distinguished from MiCA-regulated services, and that
-      the document explains how conflicts of interest, asset segregation, and client
-      disclosure obligations will be managed for those activities separately."
-    - "CONDITIONAL -- Art. 60 entities only: for each declared service, confirm
-      that the per-service equivalence mapping from [R2] is present in the document
-      with the specific MiFID II (or other directive) annex reference cited. An
-      equivalence asserted without citing the specific annex reference is a gap."
+  - - "REQ-05: Existing Authorisation Basis And Supervisory Status"
+    - "Verify that the existing licence, authorisation basis, and competent authority are identified precisely enough to support the chosen MiCA route."
 
-  - - "TASK 5: Governance, Fit & Proper, and Qualifying Holders
-      (Art. 62(2)(f)-(h), Art. 62(3) MiCA) -- REQUIRED"
-    - "Verify that the governance structure is described: composition and role of
-      the management body, reporting lines, segregation of duties between executive
-      and non-executive members, and the allocation of responsibilities between
-      board and senior management."
-    - "Using [R9] as the benchmark, check that the management body's collective
-      competence is addressed: absence of disqualifying criminal or regulatory
-      history for each member; coverage of key competencies (crypto-asset markets,
-      applicable law, risk management, internal controls, financial management);
-      and confirmation of sufficient time commitment. Each member should be
-      individually identifiable or, where the document is anonymised, described
-      with their role and background sufficient for assessment."
-    - "Verify that key function holders beyond the board are identified: at minimum
-      the MLRO, Compliance Officer, Risk Manager, and ICT/Information Security
-      Officer. For each, check that reporting lines and independence from commercial
-      functions are stated."
-    - "Apply [R10] to check qualifying holder disclosure: identify any holder of
-      10% or more of capital or voting rights; verify identity and holding size are
-      disclosed; verify absence of disqualifying criminal or regulatory history is
-      asserted. If there are no qualifying holders beyond management body members
-      already disclosed, the document must explicitly state this."
-    - "For Art. 60 entities: verify the document states that the existing supervisor
-      has already assessed the management body as fit and proper under the existing
-      authorisation, and confirms no new disqualifying events have occurred since."
-    - "Flag if the document lists management roles without any description of the
-      individuals' backgrounds or qualifications -- role titles alone are
-      insufficient."
+  - - "REQ-06: Parallel Framework Demarcation"
+    - "Verify that the document explains how crypto-asset services will operate alongside the existing regulated business without regulatory overlap, perimeter confusion, or control dilution."
 
-  - - "TASK 6: Complaints Handling (Art. 62(2)(l) MiCA) -- REQUIRED"
-    - "Verify that the entity's complaints-handling procedures are described. Check
-      coverage of: channels for submitting complaints (written, online, in-person),
-      the acknowledgement timeline, the investigation and resolution process,
-      escalation paths for unresolved complaints, and the maximum timeframe for a
-      final response."
-    - "Check that the document states whether an alternative dispute resolution (ADR)
-      mechanism is available to clients, and if so which body administers it."
-    - "Verify that the document describes how complaints are recorded, tracked, and
-      used to identify systemic issues or recurring failures -- i.e. that complaints
-      data feeds into internal quality improvement and compliance monitoring."
-    - "Flag if complaints handling is mentioned only in passing (e.g. 'a complaints
-      policy exists') without any substantive description of the actual process."
+  - - "REQ-07: Legal Identity, Jurisdiction, And Ownership"
+    - "Verify that the legal name, legal form, jurisdiction, registered address, ownership structure, and UBO information are stated with enough precision for supervisory identification."
 
-  - - "TASK 7: Geographic Scope and Target Clients (Art. 1(1)(f)-(h) RTS) -- REQUIRED"
-    - "Check that all EU Member States in which crypto-asset services will be
-      provided at launch are listed. For Art. 60 notifications, verify that the
-      geographic scope does not exceed the entity's existing passporting footprint
-      without explanation. If expansion beyond the current footprint is planned,
-      check that the document explains the basis and timing."
-    - "Verify that the document provides projected client numbers or ranges by
-      Member State for the three-year horizon, together with the key assumptions
-      underlying those projections (e.g. conversion rate from existing client base,
-      new client acquisition rate per channel)."
-    - "Confirm that the types of prospective clients are identified: retail,
-      professional, institutional. Where retail clients are targeted, check that
-      the document describes suitability or appropriateness measures applicable to
-      retail clients under MiCA conduct-of-business rules."
-    - "Check that all means of client access are described: websites (with domain
-      names), mobile applications (with names and supported languages), physical
-      offices if any, tied agents and appointed representatives. For digital-only
-      providers, verify language coverage per interface is addressed and is
-      consistent with the Member States listed."
-    - "Verify that the document confirms whether or not the entity operates physical
-      branches. If services are provided exclusively online, confirm that cross-border
-      digital delivery is addressed."
+  - - "REQ-08: Group Perimeter And Affiliated Entities"
+    - "Check whether the applicant is standalone or part of a group and whether all affiliated entities relevant to crypto-asset services are identified."
 
-  - - "TASK 8: Marketing and Promotional Activities (Art. 1(1)(i) RTS) -- REQUIRED"
-    - "Verify that the document describes the marketing channels to be used, mapped
-      per crypto-asset service: owned digital channels, paid media, tied agent or
-      partner distribution, app stores. A generic statement that 'marketing will be
-      conducted' without channel detail is insufficient."
-    - "Check that the document states that all marketing communications will be fair,
-      clear, and not misleading, and that a compliance review and approval process
-      for marketing materials is described before publication."
-    - "Confirm that the document specifies how the entity will be identified in all
-      marketing materials: legal name, regulatory status (notifying under Art. 60 or
-      authorised under Art. 59 MiCA), and contact information. If third-party
-      distributors or white-label interfaces are used, verify the document confirms
-      those channels will still clearly identify the licensed entity as the provider."
-    - "Check that languages used for marketing are listed and mapped to Member States,
-      consistent with the geographic scope in Task 7."
-    - "Flag any description of marketing that promises or implies guaranteed returns,
-      claims crypto-assets are low-risk, or describes staking rewards as equivalent
-      to interest on bank deposits -- such content is non-compliant with MiCA
-      conduct-of-business rules."
+  - - "REQ-09: Operational Impact Of Group Or Affiliate Dependencies"
+    - "Where group or affiliate relationships exist, verify whether the document explains operational dependencies such as shared ICT, treasury, outsourcing, AML support, branding, or staffing."
 
-  - - "TASK 9: Resources -- Human, Financial, and ICT (Art. 1(1)(j)-(l) RTS) -- REQUIRED"
-    - "Verify that the current organisational structure is described: the management
-      body, all key function holders (compliance, risk, AML, ICT/information security,
-      finance, operations), their physical location, and whether each function is
-      staffed internally or fulfilled by an outsourced provider."
-    - "Check that a three-year headcount plan is provided showing: staff allocated to
-      crypto-asset services broken down by function (business, control, support),
-      the timeline for hiring, and the key assumptions driving headcount growth."
-    - "Verify that the document addresses the applicable prudential capital floor from
-      [R3]: (a) identify which tier applies given the declared services, (b) confirm
-      current or projected own funds meets or exceeds that tier's threshold, and (c)
-      confirm a mechanism is described for monitoring ongoing compliance with the
-      fixed-overheads requirement. Flag if the capital floor is not mentioned at all."
-    - "Check that ICT resources supporting crypto-asset services are described:
-      internal vs. third-party or cloud infrastructure, custody and wallet technology,
-      and integration with existing platforms."
-    - "OUTSOURCING: Verify that all outsourcing arrangements supporting crypto-asset
-      services are identified and classified as critical/important or non-critical
-      using the definition in [R4]. For each critical/important outsourced function,
-      check: (a) a written agreement framework is described with scope, SLAs, audit
-      rights, data protection, and termination provisions; (b) due diligence
-      procedures are described; (c) an exit strategy and continuity plan are in
-      place; (d) the competent authority's supervisory access is not impaired. Flag
-      any arrangement where a critical function is fully outsourced with no retained
-      governance or oversight capacity at the entity level."
+  - - "REQ-10: Strategic Rationale For Crypto-Asset Services"
+    - "Verify that the document explains why the applicant is entering crypto-asset services and how the crypto perimeter fits the wider business strategy."
 
-  - - "TASK 10: Financial Forecasts (Art. 1(1)(m)-(n) RTS) -- REQUIRED"
-    - "Verify that the document includes a three-year financial forecast covering
-      the period from notification/authorisation. The forecast must include:
-      projected revenues from crypto-asset services (broken down by service type
-      if material), projected operating costs, and projected profit/loss. A historic
-      P&L and balance sheet (or summary) must also be present to establish the
-      baseline."
-    - "Check that the forecast is accompanied by key assumptions: client growth
-      rates, fee levels per service, cost inflation, headcount scaling milestones,
-      and timing of service launches. Verify these are internally consistent with
-      the client projections in Task 7 and the headcount plan in Task 9."
-    - "Confirm that at least one stress scenario is provided simulating adverse
-      conditions plausible for the entity's specific business model. For crypto-
-      asset service providers, adequate stress scenarios include at least one of:
-      significant crypto-asset market value decline (e.g. >50% price correction);
-      major operational or ICT disruption; sharp client attrition; regulatory
-      enforcement action or licence suspension. Verify the scenario quantifies
-      impact on revenue, capital adequacy, and liquidity."
-    - "Check that the source of funding for initial capital and ongoing costs is
-      disclosed -- equity, retained earnings, or external financing -- and that it
-      is credible and consistent with the prudential requirements in [R3]."
-    - "CONDITIONAL -- if service (C) or (D) is declared (exchange on own account):
-      verify that the forecasts separately address own-account treasury exposure,
-      hedging costs, and inventory management."
-    - "CONDITIONAL -- if intra-group funding or loans exist: verify disclosure of
-      terms and confirmation that they do not create regulatory capital double-
-      counting or group contagion risk."
+  - - "REQ-11: Distinction Between MiCA And Non-MiCA Activities"
+    - "Check whether staking, DeFi, NFTs, own-account activity, or other ancillary activities are clearly distinguished from MiCA-regulated services."
 
-  - - "TASK 11: Business Continuity Plan (Art. 2 RTS) -- REQUIRED"
-    - "Verify that a Business Continuity Plan (BCP) is described including: a
-      Business Impact Analysis (BIA) identifying the entity's critical functions,
-      and documented Recovery Time Objectives (RTO) and Recovery Point Objectives
-      (RPO) for each critical function."
-    - "Check that ICT-specific continuity is addressed: data backup procedures,
-      failover and redundancy mechanisms, recovery procedures for core systems
-      (client records, wallets, transaction processing, reporting), and alignment
-      with the ICT continuity requirements in [R7] (RTO/RPO documentation, at
-      minimum annual testing of critical systems)."
-    - "Confirm that the BCP covers third-party and outsourcing failure scenarios:
-      what happens if a critical service provider (custody infrastructure, ICT
-      hosting, AML monitoring, key management) fails or becomes unavailable.
-      Verify this ties back to the exit strategies in Task 9."
-    - "Verify that BCP testing and maintenance are described: frequency of tests
-      (at minimum annually for full BCP, more frequently for ICT failover), format
-      of tests (tabletop, simulation, live failover), and the process for updating
-      the BCP following material changes in services, infrastructure, or providers."
-    - "Check that a wind-down section describes how client assets and funds would
-      be returned to clients if the entity ceases operations -- including
-      identification of the responsible party and estimated timeline."
+  - - "REQ-12: Geographic Scope"
+    - "Verify that target jurisdictions are identified with enough specificity for supervisory review and that the geographic strategy is described coherently."
 
-  - - "TASK 12: AML/CTF Framework (Art. 3 RTS) -- REQUIRED"
-    - "Verify that the AML/CTF framework meets the requirements in [R8]: business-
-      wide risk assessment, CDD procedures, EDD for high-risk clients (PEPs, FATF
-      high-risk country clients), ongoing transaction monitoring, sanctions
-      screening, an STR escalation process, a designated MLRO, staff training, and
-      five-year record retention. Each element must be substantively described, not
-      merely listed."
-    - "Check that the risk assessment addresses crypto-asset-specific ML/TF risk
-      vectors: transaction anonymity (privacy coins, mixers, tumblers), cross-border
-      and cross-chain transfers, smart contract interactions, DeFi exposure, and the
-      entity's own client base risk profile. A generic AML framework without crypto-
-      asset adaptation is insufficient."
-    - "Verify that travel rule compliance is described using [R6] as the benchmark:
-      the entity must confirm it transmits originator information (name, DLT address,
-      and for transfers >EUR 1,000 address/ID/DoB) to the beneficiary CASP for every
-      transfer; that it obtains beneficiary information for every incoming transfer;
-      and that it has risk-based procedures for self-hosted wallet transfers.
-      A statement that the entity 'complies with applicable law' without procedural
-      detail is insufficient."
-    - "Confirm that the MLRO role is identified with: their reporting line (direct
-      access to the management body), their authority to file STRs independently of
-      management, and whether the role is internal or outsourced."
-    - "Flag if the AML section relies entirely on a third-party technology platform
-      (KYC/transaction monitoring SaaS) without describing the entity's own
-      governance, oversight, and decision-making responsibilities. Technology tools
-      support compliance; they do not replace the entity's AML framework."
+  - - "REQ-13: Target Client Segmentation"
+    - "Check whether the target client base is segmented meaningfully, for example retail, professional, institutional, or other clearly defined categories."
 
-  - - "TASK 13: ICT Systems and Security Arrangements (Art. 4 RTS) -- REQUIRED"
-    - "Verify that technical documentation of the ICT architecture is provided,
-      covering: core infrastructure (servers, hosting, cloud providers, network
-      topology), crypto-asset-specific systems (wallet infrastructure, blockchain
-      connectivity, key management systems), and back-office systems (client
-      records, reporting, reconciliation, monitoring)."
-    - "Check that a non-technical summary of ICT systems and cybersecurity controls
-      is included and is genuinely accessible to a non-technical reader -- it must
-      explain in plain language what systems are used, how client assets are
-      protected, and what happens in the event of a security incident. This is a
-      distinct deliverable from the technical documentation."
-    - "Verify that the ICT risk management framework meets [R7]: a documented ICT
-      risk policy, processes for continuous risk identification and assessment,
-      documented RTO/RPO for critical ICT systems, ICT incident management with
-      severity classification, and DORA-aligned reporting timelines (major incidents
-      reported within 4 hours of classification)."
-    - "Check that the document identifies critical or important ICT functions and
-      all third-party ICT providers supporting them. Verify that concentration risk
-      is assessed: the impact of a single provider failure on multiple critical
-      functions simultaneously."
-    - "Verify that the cybersecurity assurance programme is described: penetration
-      testing (at least annually for critical systems), vulnerability assessments,
-      and configuration reviews; and whether performed by internal team or external
-      specialist. CONDITIONAL -- if smart contracts are used: smart contract code
-      review must be included."
-    - "Check that incident management covers: automated detection and alerting,
-      severity classification criteria (at minimum distinguishing major from minor
-      incidents), escalation and client/authority communication procedures, and
-      post-incident review."
+  - - "REQ-14: Access Channels To Services"
+    - "Verify whether access channels to services are described clearly across website, app, API, relationship-led, or intermediary models."
 
-  - - "TASK 14: Segregation and Safekeeping of Client Assets and Funds
-      (Art. 5 RTS) -- REQUIRED"
-    - "Verify that the document describes the legal and operational prohibition on
-      using client crypto-assets or client fiat funds for own-account purposes, and
-      the specific controls that enforce this prohibition (system-level controls,
-      reconciliation processes, independent oversight)."
-    - "Check that client-to-client segregation is addressed: how the entity ensures
-      that one client's assets cannot be used to cover liabilities or shortfalls
-      attributable to another client -- covering both the wallet-level architecture
-      (individual vs. omnibus wallets) and the accounting/record-keeping layer."
-    - "Verify that the cryptographic key management model is described: key
-      generation method (HSM, MPC, multi-sig), key storage architecture (hot vs.
-      cold split with approximate percentages), backup and recovery procedures,
-      multi-party approval workflows for fund movements, and key rotation policy."
-    - "Confirm that fiat fund segregation is described: the account structure at
-      credit institutions, the legal characterisation of client funds (held on trust
-      or equivalent), the procedure for selecting and monitoring credit institutions,
-      and how those institutions are informed that the funds belong to clients."
-    - "Check that clients are informed of safeguarding arrangements: how and when
-      clients receive information about where and how their assets are held, any
-      sub-custodian relationships, and protections in the event of insolvency."
+  - - "REQ-15: Forward-Looking Client Numbers"
+    - "Verify that the document provides forward-looking client number estimates over the planning horizon and that those estimates align with the stated geography and service mix."
 
-  - - "TASK 15: Custody and Administration Policy (Art. 6 RTS) -- CONDITIONAL (A)"
-    - "SKIP THIS TASK if service (A) custody and administration has NOT been declared."
-    - "Verify that a custody and administration policy is described meeting [R5]:
-      operational and ICT risk sources specific to custody, the risk management
-      systems addressing them, and whether the entity holds insurance, capital
-      reserves, or equivalent arrangements to cover loss-of-key or operational
-      error risk."
-    - "Check that individual client record-keeping is described (at minimum daily
-      reconciliation); that the identification of client crypto-assets and means of
-      access is explained; and that loss minimisation arrangements are specified.
-      Verify the policy addresses what happens at forks, airdrops, and other events
-      generating rights attached to held crypto-assets."
-    - "Confirm that delegation to sub-custodians is addressed per [R5]: prior due
-      diligence on the delegate, verification of regulatory status, ongoing
-      monitoring, retention of liability for delegate-caused losses, and prohibition
-      of further sub-delegation without prior approval."
-    - "Verify that crypto-asset deposit and withdrawal procedures are described: how
-      incoming deposits are identified, credited, and reconciled; how withdrawal
-      requests are authenticated, approved (multi-party thresholds), executed, and
-      confirmed to the client."
+  - - "REQ-16: Complaints Handling"
+    - "Verify that the complaints framework is described operationally: intake, acknowledgement, investigation, escalation, response timing, record-keeping, and root-cause analysis."
 
-  - - "TASK 16: Trading Platform Rules and Market Abuse (Art. 7 RTS) -- CONDITIONAL (B)"
-    - "SKIP THIS TASK if service (B) operation of a trading platform has NOT been
-      declared."
-    - "Verify that platform operating rules are described: admission criteria for
-      crypto-assets to be listed (minimum liquidity, disclosure standards, whitepaper
-      requirements), listing and de-listing procedures, participant access rules
-      (eligibility criteria, KYC requirements), order types supported, and fee
-      structures."
-    - "Check that a market surveillance and abuse detection system is described,
-      capable of detecting at minimum: wash trading (simultaneous buy/sell by related
-      parties), spoofing and layering (placing and withdrawing orders to create false
-      price signals), and front-running. Verify that alerts are described and that
-      the escalation path to compliance and the competent authority is stated."
-    - "Confirm that the document describes procedures for handling suspicious
-      transaction alerts from surveillance: how alerts are reviewed, what triggers
-      an STR to the national FIU, and how the platform cooperates with competent
-      authority investigations."
+  - - "REQ-17: Marketing Footprint"
+    - "Check whether marketing channels, target audiences, crypto-asset categories, and languages are described concretely enough for supervisory review."
 
-  - - "TASK 17: Exchange of Crypto-Assets (Art. 8 RTS) -- CONDITIONAL (C and/or D)"
-    - "SKIP THIS TASK if neither service (C) exchange for funds nor service (D)
-      exchange for other crypto-assets has been declared."
-    - "Verify that a non-discriminatory commercial policy is described: the criteria
-      for client eligibility, any volume or size thresholds, and confirmation that
-      access is not refused on grounds unrelated to regulatory compliance or risk."
-    - "Check that the pricing methodology is described: how exchange rates or prices
-      are determined (reference to external price feed, own inventory valuation,
-      spread policy), the basis on which fees and spreads are set, and how pricing
-      is disclosed to clients before execution."
-    - "Verify that execution mechanics are described: how client exchange requests
-      are received and processed, how own-account inventory is managed, how liquidity
-      is sourced (own inventory, liquidity providers, market), and how hedging or
-      offsetting transactions reduce market risk."
-    - "Check that the document identifies conflicts of interest from dealing on own
-      account (principal trading) and describes how fair pricing and equal treatment
-      of clients are maintained, particularly when the entity is the direct
-      counterparty."
+  - - "REQ-18: Marketing Governance And Fair-Clear-Not-Misleading Controls"
+    - "Check whether the document describes who approves marketing, how promotional content is controlled, and how fair-clear-not-misleading standards are applied."
 
-  - - "TASK 18: Execution of Orders (Art. 9 RTS) -- CONDITIONAL (E)"
-    - "SKIP THIS TASK if service (E) execution of orders has NOT been declared."
-    - "Verify that an order execution policy is described covering: execution venues
-      and counterparties used; best execution factors (price, costs, speed,
-      likelihood of execution, size, nature of order); and their relative weighting
-      for different client types and order sizes."
-    - "Check that OTC execution is specifically addressed if that is the primary
-      method -- verify the entity explains how best execution is demonstrated
-      without centralised exchange prices, including the reference pricing
-      methodology used to assess execution quality."
-    - "Confirm that client consent to the execution policy is described: pre-
-      contractual disclosure, client acknowledgement mechanism, and notification
-      process for material updates."
-    - "Verify that the document describes: protection of client order information
-      from misuse (front-running prohibition, information barriers if the entity
-      also deals on own account); handling of any inducements received from
-      execution venues or liquidity providers; and the process for monitoring
-      execution quality and venue performance on an ongoing basis."
+  - - "REQ-19: Governance Structure And Reporting Lines"
+    - "Verify that the governance structure is described clearly enough to show who owns the business, who reports to whom, and how responsibilities are allocated."
 
-  - - "TASK 19: Service-Specific Procedures -- Reception & Transmission / Placing
-      (Art. 1(2)-(3) RTS) -- CONDITIONAL (F and/or G)"
-    - "SKIP THIS TASK if neither service (F) placing nor service (G) reception and
-      transmission has been declared."
-    - "CONDITIONAL -- if service (G) reception and transmission is declared: verify
-      that the document describes the full transmission process -- how client orders
-      are received, the counterparties or execution venues to which they are
-      transmitted, the criteria for selecting those counterparties, and how the
-      entity demonstrates it acts in the client's best interest in transmission.
-      Confirm the entity does NOT hold client funds or crypto-assets as part of
-      this service (which would convert it into execution of orders)."
-    - "CONDITIONAL -- if service (F) placing is declared: verify that the document
-      describes the placing process -- types of issuances or offerings for which
-      placing is provided, how clients are identified and approached, how conflicts
-      of interest between issuer and client are managed, and what disclosures are
-      made to clients prior to placing. Check that the entity addresses how it
-      avoids marketing unsuitable placements to clients lacking the relevant risk
-      appetite or financial capacity."
+  - - "REQ-20: Management Body Individual Fit-And-Proper Evidence"
+    - "Use [R9] to verify whether each management body member is supported by substantive individual fit-and-proper evidence rather than high-level assertions."
 
-  - - "TASK 20: Advice and Portfolio Management (Art. 10 RTS) -- CONDITIONAL (H and/or I)"
-    - "SKIP THIS TASK if neither service (H) advice nor service (I) portfolio
-      management has been declared."
-    - "Verify that the document provides evidence, or describes the framework for
-      evidencing, that natural persons who will give advice or manage portfolios
-      have the necessary knowledge and expertise: relevant professional
-      qualifications, regulatory certifications, or substantive years of experience
-      in crypto-asset markets or equivalent financial markets."
-    - "Check that the suitability assessment process is described: how client
-      knowledge and experience, financial situation, investment objectives, and risk
-      tolerance are assessed; and how the entity ensures recommendations or
-      investment decisions are suitable for the individual client."
-    - "Confirm that the document describes how advice or portfolio management
-      mandates are documented, how ongoing performance is reported to clients, and
-      how clients can modify or terminate mandates."
+  - - "REQ-21: Collective Suitability And Time Commitment"
+    - "Use [R9] to assess whether the document covers collective suitability, diversity of competence, and sufficient time commitment across the management body."
 
-  - - "TASK 21: Transfer Services (Art. 11 RTS) -- CONDITIONAL (J)"
-    - "SKIP THIS TASK if service (J) transfer services has NOT been declared."
-    - "Verify that the document describes the operational mechanics of the service:
-      how transfer instructions are received from clients, how destination addresses
-      are verified, applicable transaction limits, settlement timelines, and
-      confirmation to the client."
-    - "Check that travel rule compliance is described using [R6]: the entity must
-      transmit originator information (name, DLT address, and for transfers
-      >EUR 1,000: address/national ID/DoB) to the beneficiary CASP for every
-      transfer; obtain beneficiary information for every incoming transfer; and
-      maintain risk-based procedures for self-hosted wallet transfers. 'We comply
-      with applicable law' without procedural detail is insufficient."
-    - "Confirm that the document describes controls for failed, rejected, and
-      suspicious transfers: triggers for rejection (sanctions hit, incomplete travel
-      rule data, unhosted wallet risk), handling of assets pending investigation,
-      client notification procedures, and STR filing where applicable."
+  - - "REQ-22: Control Functions And Independence"
+    - "Verify whether Compliance, Risk, Internal Audit, ICT/Security, AML/MLRO, and safeguarding oversight functions are identified with reporting lines, internal versus outsourced status, and independence safeguards."
 
-  - - "TASK 22: Cross-Cutting Consistency and Quality Checks"
-    - "Cross-reference the Task 1 declared-services checklist against Tasks 15-21.
-      Every declared service must have a corresponding section with substantive
-      content. Every conditional task skipped for a non-declared service must be
-      noted as an intentional omission. Flag any declared service with no
-      corresponding content anywhere in the document."
-    - "Check internal consistency of forward-looking data: client volume projections
-      (Task 7) must be directionally consistent with headcount plans (Task 9) and
-      financial forecasts (Task 10). A forecast of rapid client growth with flat
-      headcount, or a stress scenario less severe than the entity's own stated
-      market volatility assumptions, are internal inconsistencies to flag."
-    - "Verify that the three-year horizon is applied consistently across all
-      forward-looking sections -- headcount plan, financial forecasts, client
-      targets by geography, and stress scenarios must all cover the same period
-      starting from the same reference date."
-    - "Check that the document is self-contained or complete by reference: every
-      policy mentioned (outsourcing policy, AML policy, conflicts of interest
-      policy, execution policy, custody policy, BCP, marketing approval procedure)
-      must either be described substantively within the PoO or explicitly identified
-      as a separate document forming part of the application dossier. A list of
-      policy titles without any description of their content is insufficient."
-    - "Verify that every key role mentioned (MLRO, DPO, Internal Audit, board
-      members, key management functions) is attributed to a named individual, or
-      where the document is anonymised, that the role is described with reporting
-      lines and functional responsibilities sufficient for supervisory assessment."
-    - "Flag any section where the language is entirely generic and contains no
-      entity-specific detail. Boilerplate sections that could apply to any CASP
-      without modification should be identified for the applicant to revise with
-      concrete, entity-specific operational content."
+  - - "REQ-23: Qualifying Holders"
+    - "Use [R10] to verify whether qualifying holders are identified, ownership sizes are disclosed, and reputation coverage is provided, or whether an explicit statement is made that no additional qualifying holders exist."
+
+  - - "REQ-24: Governance Conflicts Of Interest"
+    - "Check whether governance-level conflicts are identified and mitigated, including founder-management overlap, dual-hatting, related-party providers, or weak segregation of control roles."
+
+  - - "REQ-25: Current Staffing Adequacy"
+    - "Verify whether current staffing is described with enough detail to assess present operational adequacy for the declared crypto-asset services."
+
+  - - "REQ-26: Three-Year Headcount Plan"
+    - "Verify whether the planned three-year resource model is quantified and credible by function, not merely stated at a high level."
+
+  - - "REQ-27: Prudential Capital And Own Funds"
+    - "Use [R3] to assess whether the prudential capital floor implied by the declared services is reflected correctly and whether own-funds sufficiency is explained credibly."
+
+  - - "REQ-28: Funding Sources"
+    - "Verify that the document clearly explains how the crypto-asset business is funded initially and on an ongoing basis, including intra-group or external financing where relevant."
+
+  - - "REQ-29: Forecast Completeness And Internal Logic"
+    - "Check whether the financial forecast covers the planning horizon with enough detail and whether it is internally coherent with client growth, staffing, geography, and service scope."
+
+  - - "REQ-30: Stress Scenario And Principal Risk Exposure"
+    - "Verify that at least one relevant stress scenario is quantified for income, capital, or liquidity. Where exchange or principal exposure exists, verify whether treasury, inventory, or hedging risk is addressed."
+
+  - - "REQ-31: ICT Resources And Operational Ownership"
+    - "Verify that ICT resources are described practically: systems, providers, internal ownership, and which capabilities are core to service delivery."
+
+  - - "REQ-32: Outsourcing Inventory And Criticality Classification"
+    - "Verify that outsourced arrangements relevant to crypto-asset services are identified and that critical or important functions are distinguished from less material outsourcing."
+
+  - - "REQ-33: Outsourcing Controls Under Art. 73 MiCA"
+    - "Use [R4] to assess written agreements, due diligence, audit rights, retained responsibility, exit planning, ongoing oversight, and supervisory access for outsourced critical or important functions."
+
+  - - "REQ-34: Business Continuity Framework"
+    - "Verify that the business continuity framework covers critical functions, business impact analysis, recovery planning, testing, and credible continuity governance."
+
+  - - "REQ-35: Third-Party Failure And Wind-Down"
+    - "Verify that the document addresses third-party failure scenarios and an operationally credible client asset return or orderly wind-down process."
+
+  - - "REQ-36: AML/CTF Core Framework"
+    - "Use [R8] to assess whether the AML/CTF framework covers business-wide risk assessment, CDD, EDD, monitoring, sanctions screening, STR escalation, training, and record retention with real operational substance."
+
+  - - "REQ-37: Crypto-Specific AML Risk Coverage"
+    - "Use [R8] to verify whether crypto-specific risks such as anonymity, cross-border flows, mixers, smart contracts, and high-risk jurisdictions are addressed."
+
+  - - "REQ-38: Travel Rule And Self-Hosted Wallet Controls"
+    - "Use [R6] to verify travel rule handling, sanctions screening for transfers, incomplete data handling, and risk-based controls for self-hosted wallets."
+
+  - - "REQ-39: MLRO Authority, Independence, And Reporting Access"
+    - "Use [R8] to verify whether the MLRO role has clear authority, independence, direct reporting access, and authority to file STRs."
+
+  - - "REQ-40: ICT Architecture And Non-Technical Summary"
+    - "Verify that the document provides both a technical ICT architecture view and a genuinely usable non-technical summary for supervisory readers."
+
+  - - "REQ-41: ICT Risk Management, Incident Response, And Testing"
+    - "Use [R7] to assess ICT risk policy, risk assessment processes, incident management, DORA-aligned reporting timing, resilience testing, and RTO/RPO coverage."
+
+  - - "REQ-42: ICT Third-Party Register And Concentration Risk"
+    - "Use [R7] to assess whether ICT third-party providers, contract protections, exit arrangements, and concentration risk are described where one provider supports multiple critical functions."
+
+  - - "REQ-43: Safeguarding Prohibition, Segregation, And Reconciliation"
+    - "Verify that own-account use of client assets is prohibited operationally and that client-to-own and client-to-client segregation plus reconciliation controls are described."
+
+  - - "REQ-44: Key Management And Safeguarding Disclosures"
+    - "Verify that key management is described with enough specificity to assess generation, storage, approval, backup, recovery, rotation, and client safeguarding disclosures."
+
+  - - "REQ-45: Custody Policy Under Art. 75 MiCA"
+    - "CONDITIONAL -- apply only if service (A) is positively declared in the document. Use [R5] to assess whether the custody policy covers operational and ICT risks, record-keeping, reconciliation, insurance or equivalent support, and return arrangements."
+
+  - - "REQ-46: Custody Operations And Sub-Custody"
+    - "CONDITIONAL -- apply only if service (A) is positively declared in the document. Verify deposit and withdrawal mechanics, sub-custody controls, ongoing oversight, liability retention, and limits on onward delegation."
+
+  - - "REQ-47: Trading Platform Rules And Market Abuse"
+    - "CONDITIONAL -- apply only if service (B) is positively declared in the document. Verify listing rules, participant access, order handling, market surveillance, abuse monitoring, and escalation mechanics."
+
+  - - "REQ-48: Exchange Services Operating Model"
+    - "CONDITIONAL -- apply only if service (C) and/or (D) is positively declared in the document. Verify commercial policy, pricing methodology, liquidity sourcing, execution flow, principal-risk conflicts, and fairness controls."
+
+  - - "REQ-49: Execution Of Orders Operating Model"
+    - "CONDITIONAL -- apply only if service (E) is positively declared in the document. Verify best execution policy, venue or counterparty selection, OTC methodology, client consent, execution quality monitoring, and safeguards against misuse of order information."
+
+  - - "REQ-50: Reception, Transmission, And Placing"
+    - "CONDITIONAL -- apply only if service (F) and/or (G) is positively declared in the document. Verify order transmission or placing mechanics, target investor controls, best-interest handling, conflicts management, and client disclosures."
+
+  - - "REQ-51: Advice And Portfolio Management"
+    - "CONDITIONAL -- apply only if service (H) and/or (I) is positively declared in the document. Verify competence, suitability or appropriateness logic, mandate mechanics, and client disclosures."
+
+  - - "REQ-52: Transfer Services"
+    - "CONDITIONAL -- apply only if service (J) is positively declared in the document. Verify transfer mechanics, travel rule controls, sanctions handling, and operational boundaries between transfer and custody."
+
+  - - "REQ-53: Cross-Document Consistency On Scope, Numbers, And Operating Model"
+    - "Cross-check the service matrix, staffing, forecast, geography, continuity, AML, ICT, and safeguarding sections only for concrete internal inconsistencies in declared scope, numbers, timelines, or operating model."
+
+  - - "REQ-54: Boilerplate, Placeholders, And External Dossier Referencing"
+    - "Verify that cited policies are either substantively summarised or clearly identified as separate dossier items, that key roles are attributable to named persons or well-defined functions, and that material sections are not unresolved boilerplate or placeholder text."

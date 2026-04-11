@@ -6,10 +6,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.api.dependencies import require_docstore, sync_authenticated_org
-from app.api.routes.documents import DocumentListResponse, _to_document_list_item
+from app.api.routes.documents import DocumentListResponse, _augment_compliance_result, _to_document_list_item
 from app.core.auth import AuthContext, get_auth_context
 from app.services.evaluation import state as eval_state
-from app.services.evaluation.agent import TaskEvaluationResult, evaluate_task_with_agent
+from app.services.evaluation.agent import (
+    TaskEvaluationResult,
+    build_exploratory_document_summary,
+    evaluate_task_with_agent,
+)
 from app.services.legislation.templates import get_legislation_template, validate_template_ids
 from app.services.storage.service import (
     DocumentAccessDeniedError,
@@ -131,6 +135,27 @@ async def _run_project_evaluation_background(
             ),
             phase="setup",
         )
+        await eval_state.update_progress(
+            job_id,
+            current_task=None,
+            completed_count=0,
+            status_message="Building exploratory document summary.",
+            activity_message="Started exploratory summary pass across the combined project corpus.",
+            phase="exploratory_summary",
+        )
+        exploratory_summary = await build_exploratory_document_summary(
+            chunks_raw,
+            documents=documents,
+        )
+        if exploratory_summary:
+            await eval_state.update_progress(
+                job_id,
+                current_task=None,
+                completed_count=0,
+                status_message="Exploratory summary ready. Starting task analysis.",
+                activity_message="Prepared exploratory summary for downstream task analysis.",
+                phase="exploratory_summary_ready",
+            )
         total_tasks = sum(len(run["tasks"]) for run in evaluation_runs)
         results: list[TaskEvaluationResult | None] = [None] * total_tasks
         completed_count = 0
@@ -169,6 +194,7 @@ async def _run_project_evaluation_background(
                 chunks=chunks_raw,
                 system_prompt_override=run.get("system_prompt_override"),
                 references=run.get("references"),
+                exploratory_summary=exploratory_summary,
             )
             result.legislation_id = run["template_id"]
             result.legislation_name = run["template_name"]
@@ -199,26 +225,32 @@ async def _run_project_evaluation_background(
         )
 
         final_results = [r.model_dump() for r in results if r is not None]
+        legislations = []
+        for run_summary in run_summaries:
+            leg_results = [
+                results[idx].model_dump()
+                for idx in run_summary["result_indexes"]
+                if results[idx] is not None
+            ]
+            leg_entry = {
+                "template_id": run_summary["template_id"],
+                "template_name": run_summary["template_name"],
+                "task_count": run_summary["task_count"],
+                "results": leg_results,
+            }
+            _augment_compliance_result(leg_entry)
+            legislations.append(leg_entry)
+
         compliance_result = {
             "evaluation_job_id": job_id,
             "project_id": project_id,
             "documents": documents,
             "legislation_template_ids": [run["template_id"] for run in evaluation_runs],
-            "legislations": [
-                {
-                    "template_id": run_summary["template_id"],
-                    "template_name": run_summary["template_name"],
-                    "task_count": run_summary["task_count"],
-                    "results": [
-                        results[idx].model_dump()
-                        for idx in run_summary["result_indexes"]
-                        if results[idx] is not None
-                    ],
-                }
-                for run_summary in run_summaries
-            ],
+            "exploratory_summary": exploratory_summary,
+            "legislations": legislations,
             "results": final_results,
         }
+        _augment_compliance_result(compliance_result)
 
         await service.save_project_compliance_result(
             organization_id=organization_id,
@@ -587,6 +619,11 @@ async def get_project_compliance_result(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except OrganizationMismatchError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    if compliance_result:
+        for leg in compliance_result.get("legislations", []):
+            _augment_compliance_result(leg)
+        _augment_compliance_result(compliance_result)
 
     return ProjectComplianceResponse(project_id=project_id, compliance_result=compliance_result)
 

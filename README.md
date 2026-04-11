@@ -108,6 +108,12 @@ Each authenticated Clerk user gets exactly one private internal workspace. There
 - The project evaluation process continues server-side even if the frontend tab closes or stops polling.
 - The status endpoint now includes loader-friendly fields: `status_message`, `progress_percent`, and `activity`.
 
+## System instructions
+- Editable prompt files live in `system-instructions/`.
+- The evaluation agent uses `system-instructions/evaluation-agent.yaml`.
+- The legislation comparison script uses `system-instructions/legislation-compare.yaml`.
+- You can override the directory with `SYSTEM_INSTRUCTIONS_DIR`.
+
 ## Upload request shape
 `multipart/form-data`:
 - `file` (`.md` / Markdown file, required)

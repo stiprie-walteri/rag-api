@@ -20,7 +20,11 @@ from app.services.storage.service import (
 from app.services.storage.service import DocumentStorageService
 from app.services.pdf.chunking import chunk_pdf
 from app.services.pdf.converter import convert_pdf_to_markdown
-from app.services.evaluation.agent import evaluate_task_with_agent, TaskEvaluationResult
+from app.services.evaluation.agent import (
+    TaskEvaluationResult,
+    build_exploratory_document_summary,
+    evaluate_task_with_agent,
+)
 from app.services.evaluation import state as eval_state
 from app.services.legislation.templates import get_legislation_template
 
@@ -232,23 +236,32 @@ def _to_document_list_item(raw: dict) -> DocumentListItem:
     )
 
 
-@router.post("/api/documents/upload", response_model=UploadDocumentResponse)
-async def upload_document(
-    organization_id: str | None = Form(default=None),
-    file: UploadFile = File(...),
-    document_id: str | None = Form(default=None),
-    project_id: str | None = Form(default=None),
-    title: str | None = Form(default=None),
-    message: str | None = Form(default=None),
-    auth: AuthContext = Depends(get_auth_context),
-):
-    service = require_docstore()
-    org_context = await sync_authenticated_org(
-        service,
-        auth,
-        requested_organization_id=organization_id,
-        create_if_missing=True,
-    )
+class BatchUploadFailure(BaseModel):
+    filename: str
+    error: str
+
+
+class BatchUploadDocumentResponse(BaseModel):
+    organization_id: str
+    project_id: str | None = None
+    documents: list[UploadDocumentResponse]
+    failed: list[BatchUploadFailure]
+
+
+MAX_BATCH_UPLOAD_SIZE = 20
+
+
+async def _process_single_upload(
+    *,
+    service,
+    file: UploadFile,
+    organization_id: str,
+    actor_user_id: str,
+    project_id: str | None,
+    document_id: str | None,
+    title: str | None,
+    message: str | None,
+) -> UploadDocumentResponse:
     is_md = _is_markdown_upload(file)
     is_pdf = _is_pdf_upload(file)
     if not is_md and not is_pdf:
@@ -257,8 +270,10 @@ async def upload_document(
     raw_bytes = await file.read()
     if not raw_bytes:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-    
+
     chunks = None
+    tmp_pdf_path = None
+    tmp_md_path = None
     if is_pdf:
         try:
             try:
@@ -284,8 +299,8 @@ async def upload_document(
 
     try:
         result = await service.create_version(
-            organization_id=org_context["organization_id"],
-            actor_user_id=auth.user_id,
+            organization_id=organization_id,
+            actor_user_id=actor_user_id,
             markdown_bytes=markdown_bytes,
             document_id=document_id,
             project_id=project_id,
@@ -308,7 +323,7 @@ async def upload_document(
     if chunks:
         try:
             await service.save_document_chunks(
-                organization_id=org_context["organization_id"],
+                organization_id=organization_id,
                 document_id=result["document_id"],
                 version_id=result["version_id"],
                 chunks=chunks,
@@ -317,12 +332,98 @@ async def upload_document(
             logger.warning("Failed to save document chunks: %s", exc)
 
     return UploadDocumentResponse(
-        organization_id=org_context["organization_id"],
+        organization_id=organization_id,
         project_id=result.get("project_id"),
         document_id=result["document_id"],
         version_id=result["version_id"],
         version_no=result["version_no"],
         content_hash=result["content_hash"],
+    )
+
+
+@router.post("/api/documents/upload", response_model=UploadDocumentResponse)
+async def upload_document(
+    organization_id: str | None = Form(default=None),
+    file: UploadFile = File(...),
+    document_id: str | None = Form(default=None),
+    project_id: str | None = Form(default=None),
+    title: str | None = Form(default=None),
+    message: str | None = Form(default=None),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    service = require_docstore()
+    org_context = await sync_authenticated_org(
+        service,
+        auth,
+        requested_organization_id=organization_id,
+        create_if_missing=True,
+    )
+    return await _process_single_upload(
+        service=service,
+        file=file,
+        organization_id=org_context["organization_id"],
+        actor_user_id=auth.user_id,
+        project_id=project_id,
+        document_id=document_id,
+        title=title,
+        message=message,
+    )
+
+
+@router.post("/api/documents/upload-batch", response_model=BatchUploadDocumentResponse)
+async def upload_documents_batch(
+    organization_id: str | None = Form(default=None),
+    files: list[UploadFile] = File(...),
+    project_id: str | None = Form(default=None),
+    message: str | None = Form(default=None),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    if len(files) > MAX_BATCH_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many files. Maximum {MAX_BATCH_UPLOAD_SIZE} files per batch.",
+        )
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided.")
+
+    service = require_docstore()
+    org_context = await sync_authenticated_org(
+        service,
+        auth,
+        requested_organization_id=organization_id,
+        create_if_missing=True,
+    )
+    resolved_org_id = org_context["organization_id"]
+
+    documents: list[UploadDocumentResponse] = []
+    failed: list[BatchUploadFailure] = []
+
+    for file in files:
+        filename = file.filename or "unknown"
+        title = os.path.splitext(filename)[0]
+        try:
+            result = await _process_single_upload(
+                service=service,
+                file=file,
+                organization_id=resolved_org_id,
+                actor_user_id=auth.user_id,
+                project_id=project_id,
+                document_id=None,
+                title=title,
+                message=message,
+            )
+            documents.append(result)
+        except HTTPException as exc:
+            failed.append(BatchUploadFailure(filename=filename, error=exc.detail))
+        except Exception as exc:
+            logger.warning("Batch upload failed for file %s: %s", filename, exc)
+            failed.append(BatchUploadFailure(filename=filename, error=str(exc)))
+
+    return BatchUploadDocumentResponse(
+        organization_id=resolved_org_id,
+        project_id=project_id,
+        documents=documents,
+        failed=failed,
     )
 
 
@@ -706,6 +807,7 @@ async def _run_evaluation_background(
     service: DocumentStorageService,
 ) -> None:
     try:
+        exploratory_summary = await build_exploratory_document_summary(chunks_raw)
         total_tasks = sum(len(run["tasks"]) for run in evaluation_runs)
         results: list[TaskEvaluationResult | None] = [None] * total_tasks
         completed_count = 0
@@ -746,6 +848,7 @@ async def _run_evaluation_background(
                     chunks=chunks_raw,
                     system_prompt_override=run.get("system_prompt_override"),
                     references=run.get("references"),
+                    exploratory_summary=exploratory_summary,
                 )
                 result.legislation_id = run["template_id"]
                 result.legislation_name = run["template_name"]
@@ -765,6 +868,7 @@ async def _run_evaluation_background(
                 version_id=version_id,
                 result={
                     "evaluation_job_id": job_id,
+                    "exploratory_summary": exploratory_summary,
                     "legislations": [
                         {
                             "template_id": run_summary["template_id"],

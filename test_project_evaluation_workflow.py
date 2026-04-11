@@ -1,6 +1,5 @@
 import asyncio
 import os
-import tempfile
 import textwrap
 import unittest
 from pathlib import Path
@@ -159,8 +158,9 @@ class _InMemoryEvalState:
 
 class ProjectEvaluationWorkflowTests(unittest.IsolatedAsyncioTestCase):
     async def test_project_evaluation_uses_multiple_documents_and_multiple_legislations(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            templates_dir = Path(tmpdir)
+        templates_dir = Path("_tmp_project_eval_templates")
+        templates_dir.mkdir(exist_ok=True)
+        try:
             (templates_dir / "leg_alpha.yaml").write_text(
                 textwrap.dedent(
                     """
@@ -241,7 +241,14 @@ class ProjectEvaluationWorkflowTests(unittest.IsolatedAsyncioTestCase):
             scheduled_tasks: list[asyncio.Task] = []
             real_create_task = asyncio.create_task
 
-            async def fake_evaluate_task_with_agent(task_list, chunks, system_prompt_override=None, references=None):
+            async def fake_evaluate_task_with_agent(
+                task_list,
+                chunks,
+                system_prompt_override=None,
+                references=None,
+                exploratory_summary=None,
+            ):
+                self.assertEqual(exploratory_summary, "Project corpus exploratory summary")
                 corpus = " ".join(chunk["text_content"].lower() for chunk in chunks)
                 task_text = " ".join(task_list).lower()
                 if "alpha and beta" in task_text:
@@ -272,51 +279,60 @@ class ProjectEvaluationWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     ):
                         with patch("app.api.routes.projects.eval_state", eval_state):
                             with patch(
-                                "app.api.routes.projects.evaluate_task_with_agent",
-                                new=AsyncMock(side_effect=fake_evaluate_task_with_agent),
+                                "app.api.routes.projects.build_exploratory_document_summary",
+                                new=AsyncMock(return_value="Project corpus exploratory summary"),
                             ):
-                                with patch("app.api.routes.projects.asyncio.create_task", side_effect=capture_create_task):
-                                    start_response = await evaluate_project(
-                                        organization_id="org-1",
-                                        project_id="project-1",
-                                        request=type("Req", (), {"template_ids": None})(),
-                                        auth=_Auth("user-1"),
-                                    )
+                                with patch(
+                                    "app.api.routes.projects.evaluate_task_with_agent",
+                                    new=AsyncMock(side_effect=fake_evaluate_task_with_agent),
+                                ):
+                                    with patch("app.api.routes.projects.asyncio.create_task", side_effect=capture_create_task):
+                                        start_response = await evaluate_project(
+                                            organization_id="org-1",
+                                            project_id="project-1",
+                                            request=type("Req", (), {"template_ids": None})(),
+                                            auth=_Auth("user-1"),
+                                        )
 
-                                    self.assertEqual(start_response.project_id, "project-1")
-                                    self.assertEqual(start_response.status, "running")
-                                    self.assertEqual(len(scheduled_tasks), 1)
+                                        self.assertEqual(start_response.project_id, "project-1")
+                                        self.assertEqual(start_response.status, "running")
+                                        self.assertEqual(len(scheduled_tasks), 1)
 
-                                    await scheduled_tasks[0]
+                                        await scheduled_tasks[0]
 
-                                    status_response = await get_project_evaluation_status(
-                                        organization_id="org-1",
-                                        project_id="project-1",
-                                        auth=_Auth("user-1"),
-                                    )
+                                        status_response = await get_project_evaluation_status(
+                                            organization_id="org-1",
+                                            project_id="project-1",
+                                            auth=_Auth("user-1"),
+                                        )
+        finally:
+            for file_path in templates_dir.glob("*.yaml"):
+                file_path.unlink(missing_ok=True)
+            templates_dir.rmdir()
 
-            self.assertEqual(status_response.status, "completed")
-            self.assertEqual(status_response.total_tasks, 2)
-            self.assertEqual(status_response.completed_count, 2)
-            self.assertEqual(status_response.progress_percent, 100)
-            self.assertEqual(status_response.status_message, "Project analysis complete.")
-            self.assertEqual(status_response.estimated_seconds_remaining, 0)
-            self.assertIsNotNone(status_response.estimated_completion_at)
-            self.assertEqual(len(status_response.documents), 2)
-            self.assertEqual(status_response.legislation_template_ids, ["leg-alpha", "leg-gamma"])
-            self.assertEqual(len(status_response.results), 2)
-            self.assertTrue(all(result.exists for result in status_response.results))
-            self.assertGreaterEqual(len(status_response.activity), 3)
+        self.assertEqual(status_response.status, "completed")
+        self.assertEqual(status_response.total_tasks, 2)
+        self.assertEqual(status_response.completed_count, 2)
+        self.assertEqual(status_response.progress_percent, 100)
+        self.assertEqual(status_response.status_message, "Project analysis complete.")
+        self.assertEqual(status_response.estimated_seconds_remaining, 0)
+        self.assertIsNotNone(status_response.estimated_completion_at)
+        self.assertEqual(len(status_response.documents), 2)
+        self.assertEqual(status_response.legislation_template_ids, ["leg-alpha", "leg-gamma"])
+        self.assertEqual(len(status_response.results), 2)
+        self.assertTrue(all(result.exists for result in status_response.results))
+        self.assertGreaterEqual(len(status_response.activity), 3)
 
-            saved = service.saved_compliance_result
-            self.assertIsNotNone(saved)
-            self.assertEqual(saved["project_id"], "project-1")
-            self.assertEqual(len(saved["documents"]), 2)
-            self.assertEqual(saved["legislation_template_ids"], ["leg-alpha", "leg-gamma"])
-            self.assertEqual(len(saved["legislations"]), 2)
-            self.assertEqual(saved["legislations"][0]["template_id"], "leg-alpha")
-            self.assertEqual(saved["legislations"][1]["template_id"], "leg-gamma")
-            self.assertTrue(all(item["results"][0]["exists"] for item in saved["legislations"]))
+        saved = service.saved_compliance_result
+        self.assertIsNotNone(saved)
+        self.assertEqual(saved["project_id"], "project-1")
+        self.assertEqual(len(saved["documents"]), 2)
+        self.assertEqual(saved["legislation_template_ids"], ["leg-alpha", "leg-gamma"])
+        self.assertEqual(saved["exploratory_summary"], "Project corpus exploratory summary")
+        self.assertEqual(len(saved["legislations"]), 2)
+        self.assertEqual(saved["legislations"][0]["template_id"], "leg-alpha")
+        self.assertEqual(saved["legislations"][1]["template_id"], "leg-gamma")
+        self.assertTrue(all(item["results"][0]["exists"] for item in saved["legislations"]))
 
 
 if __name__ == "__main__":
