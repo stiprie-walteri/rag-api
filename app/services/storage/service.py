@@ -767,9 +767,14 @@ class DocumentStorageService:
         if not clerk_user_id:
             raise ValueError("clerk_user_id is required.")
 
-        private_org_key = f"user:{clerk_user_id}"
-        local_org_role = "owner"
-        organization_name = primary_email or "Personal workspace"
+        if not clerk_org_id:
+            raise DocumentAccessDeniedError(
+                "No organization active. You must be added to an organization to access this application."
+            )
+
+        # Map Clerk role to our DB role ("owner" or "member")
+        local_org_role = "owner" if clerk_org_role and "admin" in clerk_org_role else "member"
+        organization_name = clerk_org_slug or clerk_org_id
 
         async with await psycopg.AsyncConnection.connect(self.settings.postgres_dsn, row_factory=dict_row) as conn:
             async with conn.transaction():
@@ -782,72 +787,12 @@ class DocumentStorageService:
                         last_name=last_name,
                     )
 
-                    organization_row = None
-                    existing_private_org_row = await self._get_organization_by_clerk_org_id(cur, private_org_key)
-
-                    REQUIRE_ORG_VALIDATION = os.getenv("REQUIRE_ORG_VALIDATION", "true").strip().lower() in {"1", "true", "yes", "on"}
-
-                    if not REQUIRE_ORG_VALIDATION and requested_organization_id is not None:
-                        await cur.execute(
-                            """
-                            INSERT INTO organizations (
-                                id, clerk_org_id, clerk_org_slug, name, created_at
-                            ) VALUES (%s, NULL, %s, %s, NOW())
-                            ON CONFLICT (id) DO NOTHING;
-                            """,
-                            (requested_organization_id, None, organization_name)
-                        )
-                        organization_row = await self._get_organization_by_id(cur, requested_organization_id)
-                    elif requested_organization_id is not None:
-                        organization_row = await self._get_organization_by_id(cur, requested_organization_id)
-                        if organization_row is None:
-                            raise OrganizationNotFoundError(
-                                f"Organization {requested_organization_id} was not found."
-                            )
-
-                        if (
-                            existing_private_org_row is not None
-                            and organization_row["id"] != existing_private_org_row["id"]
-                        ):
-                            raise OrganizationMismatchError(
-                                f"Organization {requested_organization_id} does not match the authenticated "
-                                f"user's private workspace {existing_private_org_row['id']}."
-                            )
-
-                        existing_clerk_org_id = organization_row["clerk_org_id"]
-                        if existing_clerk_org_id is None:
-                            membership_role = await self._get_organization_membership_role(
-                                cur,
-                                organization_id=requested_organization_id,
-                                user_id=clerk_user_id,
-                            )
-                            if membership_role != "owner":
-                                raise DocumentAccessDeniedError(
-                                    f"User {clerk_user_id} cannot claim organization {requested_organization_id}."
-                                )
-                            await cur.execute(
-                                """
-                                UPDATE organizations
-                                SET clerk_org_id = %s,
-                                    clerk_org_slug = NULL,
-                                    name = COALESCE(%s, name)
-                                WHERE id = %s;
-                                """,
-                                (private_org_key, organization_name, requested_organization_id),
-                            )
-                        elif existing_clerk_org_id != private_org_key:
-                            raise OrganizationMismatchError(
-                                f"Organization {requested_organization_id} is linked to {existing_clerk_org_id}, not {private_org_key}."
-                            )
-                        organization_row = await self._get_organization_by_id(cur, requested_organization_id)
-
-                    if organization_row is None:
-                        organization_row = existing_private_org_row
+                    organization_row = await self._get_organization_by_clerk_org_id(cur, clerk_org_id)
 
                     if organization_row is None:
                         if not create_if_missing:
                             raise OrganizationNotFoundError(
-                                "No private workspace exists for the authenticated user."
+                                f"Organization {clerk_org_id} was not found."
                             )
                         organization_id = str(uuid.uuid4())
                         await cur.execute(
@@ -861,18 +806,19 @@ class DocumentStorageService:
                             )
                             VALUES (%s, %s, %s, %s, NOW());
                             """,
-                            (organization_id, private_org_key, None, organization_name),
+                            (organization_id, clerk_org_id, clerk_org_slug, organization_name),
                         )
                         organization_row = await self._get_organization_by_id(cur, organization_id)
                     else:
+                        # Keep slug and name in sync with Clerk
                         await cur.execute(
                             """
                             UPDATE organizations
-                            SET clerk_org_slug = NULL,
+                            SET clerk_org_slug = %s,
                                 name = COALESCE(%s, name)
                             WHERE id = %s;
                             """,
-                            (organization_name, organization_row["id"]),
+                            (clerk_org_slug, organization_name, organization_row["id"]),
                         )
                         organization_row = await self._get_organization_by_id(cur, organization_row["id"])
 
@@ -887,8 +833,8 @@ class DocumentStorageService:
 
         return {
             "organization_id": organization_row["id"],
-            "clerk_org_id": private_org_key,
-            "clerk_org_slug": None,
+            "clerk_org_id": clerk_org_id,
+            "clerk_org_slug": clerk_org_slug,
             "organization_role": local_org_role,
             "user_id": clerk_user_id,
         }
