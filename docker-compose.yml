@@ -104,6 +104,7 @@ services:
     volumes:
       # Mount templates for live editing (optional)
       - ./legislation-templates:/app/legislation-templates:ro
+      - ./system-instructions:/app/system-instructions:ro
 
 volumes:
   rag_postgres_data:

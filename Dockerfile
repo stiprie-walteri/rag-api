@@ -31,6 +31,7 @@ COPY app/ /app/app/
 COPY full_response.json .
 COPY migrations/ /app/migrations/
 COPY legislation-templates/ /app/legislation-templates/
+COPY system-instructions/ /app/system-instructions/
 
 # Change ownership to non-root user
 RUN chown -R appuser:appuser /app
