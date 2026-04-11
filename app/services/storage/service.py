@@ -382,10 +382,6 @@ class DocumentStorageService:
         organization_id: str,
         user_id: str,
     ) -> str:
-        REQUIRE_ORG_VALIDATION = os.getenv("REQUIRE_ORG_VALIDATION", "true").strip().lower() in {"1", "true", "yes", "on"}
-        if not REQUIRE_ORG_VALIDATION:
-            return "owner"
-
         role = await self._get_organization_membership_role(cur, organization_id=organization_id, user_id=user_id)
         if role is None:
             raise DocumentAccessDeniedError(
@@ -640,14 +636,6 @@ class DocumentStorageService:
             user_id=user_id,
         )
 
-        REQUIRE_ORG_VALIDATION = os.getenv("REQUIRE_ORG_VALIDATION", "true").strip().lower() in {"1", "true", "yes", "on"}
-        if not REQUIRE_ORG_VALIDATION:
-            await cur.execute("SELECT * FROM documents WHERE id = %s;", (document_id,))
-            doc_row = await cur.fetchone()
-            if doc_row is None:
-                raise DocumentNotFoundError(f"Document {document_id} was not found.")
-            return doc_row, "owner"
-
         document_row = await self._assert_document_in_org(
             cur,
             organization_id=organization_id,
@@ -788,10 +776,12 @@ class DocumentStorageService:
                     )
 
                     organization_row = await self._get_organization_by_clerk_org_id(cur, clerk_org_id)
+                    organization_row = await self._get_organization_by_clerk_org_id(cur, clerk_org_id)
 
                     if organization_row is None:
                         if not create_if_missing:
                             raise OrganizationNotFoundError(
+                                f"Organization {clerk_org_id} was not found."
                                 f"Organization {clerk_org_id} was not found."
                             )
                         organization_id = str(uuid.uuid4())
@@ -807,17 +797,21 @@ class DocumentStorageService:
                             VALUES (%s, %s, %s, %s, NOW());
                             """,
                             (organization_id, clerk_org_id, clerk_org_slug, organization_name),
+                            (organization_id, clerk_org_id, clerk_org_slug, organization_name),
                         )
                         organization_row = await self._get_organization_by_id(cur, organization_id)
                     else:
+                        # Keep slug and name in sync with Clerk
                         # Keep slug and name in sync with Clerk
                         await cur.execute(
                             """
                             UPDATE organizations
                             SET clerk_org_slug = %s,
+                            SET clerk_org_slug = %s,
                                 name = COALESCE(%s, name)
                             WHERE id = %s;
                             """,
+                            (clerk_org_slug, organization_name, organization_row["id"]),
                             (clerk_org_slug, organization_name, organization_row["id"]),
                         )
                         organization_row = await self._get_organization_by_id(cur, organization_row["id"])
@@ -833,6 +827,8 @@ class DocumentStorageService:
 
         return {
             "organization_id": organization_row["id"],
+            "clerk_org_id": clerk_org_id,
+            "clerk_org_slug": clerk_org_slug,
             "clerk_org_id": clerk_org_id,
             "clerk_org_slug": clerk_org_slug,
             "organization_role": local_org_role,
