@@ -1159,11 +1159,7 @@ async def save_compliance_result(
 async def run_docstore_gc(
     dry_run: bool = Query(default=True),
     max_delete: int = Query(default=100, ge=1, le=5000),
-    auth: AuthContext = Depends(get_auth_context),
 ):
     service = require_docstore()
-    org_context = await sync_authenticated_org(service, auth, create_if_missing=False)
-    if org_context["organization_role"] != "owner":
-        raise HTTPException(status_code=403, detail="Only organization owners can run storage garbage collection.")
     result = await service.gc_unreferenced_objects(dry_run=dry_run, max_delete=max_delete)
     return DocstoreGcResponse(**result)
