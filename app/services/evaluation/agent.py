@@ -1,8 +1,9 @@
 import os
 import json
 import logging
+import hashlib
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 from json_repair import repair_json
@@ -31,9 +32,39 @@ def get_openrouter_client() -> AsyncOpenAI:
 class ReasoningStep(BaseModel):
     step: int
     thought: Optional[str] = None          # model's reasoning text before the tool call
-    sections_queried: List[int] = []        # section indexes it decided to fetch
-    section_titles: List[str] = []          # human-readable titles for those indexes
-    references_queried: List[str] = []     # legislation reference IDs fetched (e.g. R1, R3)
+    sections_queried: List[int] = Field(default_factory=list)        # section indexes it decided to fetch
+    section_titles: List[str] = Field(default_factory=list)          # human-readable titles for those indexes
+    references_queried: List[str] = Field(default_factory=list)     # legislation reference IDs fetched (e.g. R1, R3)
+
+
+class IssueSectionReference(BaseModel):
+    id: Optional[str] = None
+    title: Optional[str] = None
+    quote: Optional[str] = None
+
+
+class SuggestedInsertLocation(BaseModel):
+    action: str = "insert"
+    target_section_id: Optional[str] = None
+    target_section_title: Optional[str] = None
+    anchor_quote: Optional[str] = None
+    placement: str = "after"
+
+
+class SuggestedFix(BaseModel):
+    insertable_text: str = ""
+    insert_location: SuggestedInsertLocation = Field(default_factory=SuggestedInsertLocation)
+
+
+class DocumentationIssue(BaseModel):
+    issue_id: Optional[str] = None
+    issue_type: str = "documentation_issue"
+    title: str = ""
+    legislation_reference: Optional[str] = None
+    current_section: Optional[IssueSectionReference] = None
+    problem: str = ""
+    solution: str = ""
+    suggested_fix: SuggestedFix = Field(default_factory=SuggestedFix)
 
 
 class TaskEvaluationResult(BaseModel):
@@ -42,9 +73,10 @@ class TaskEvaluationResult(BaseModel):
     task: List[str]
     exists: bool
     explanation: str
-    missing_sections: List[str] = []
-    incorrect_sections: List[Dict[str, str]] = []
-    reasoning_steps: List[ReasoningStep] = []
+    missing_sections: List[str] = Field(default_factory=list)
+    incorrect_sections: List[Dict[str, str]] = Field(default_factory=list)
+    issues: List[DocumentationIssue] = Field(default_factory=list)
+    reasoning_steps: List[ReasoningStep] = Field(default_factory=list)
 
 
 def _format_toc(chunks: List[Dict[str, Any]]) -> str:
@@ -54,6 +86,280 @@ def _format_toc(chunks: List[Dict[str, Any]]) -> str:
         level_prefix = "  " * (c.get("chunk_level", 1) - 1)
         toc_lines.append(f"{level_prefix}{i}: {title} (Pages {c.get('start_page', '?')}-{c.get('end_page', '?')})")
     return "\n".join(toc_lines)
+
+
+def _clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value).strip()
+
+
+def _first_text(mapping: Dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        if key in mapping:
+            text = _clean_text(mapping.get(key))
+            if text:
+                return text
+    return ""
+
+
+def _first_value(mapping: Dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in mapping and mapping.get(key) is not None:
+            return mapping.get(key)
+    return None
+
+
+def _parse_current_section(raw_issue: Dict[str, Any]) -> Optional[IssueSectionReference]:
+    section_raw = _first_value(
+        raw_issue,
+        "Current Section",
+        "current_section",
+        "CurrentSection",
+        "section",
+    )
+    if isinstance(section_raw, dict):
+        section = IssueSectionReference(
+            id=_first_text(section_raw, "ID", "id", "Section ID", "section_id"),
+            title=_first_text(section_raw, "Title", "title", "Section Title", "section_title"),
+            quote=_first_text(section_raw, "Quote", "quote", "Problem Quote", "problem_quote"),
+        )
+    else:
+        section = IssueSectionReference(
+            id=_first_text(raw_issue, "ID", "id", "Section ID", "section_id"),
+            title=_first_text(raw_issue, "Section Title", "section_title"),
+            quote=_first_text(raw_issue, "Quote", "quote", "Problem Quote", "problem_quote"),
+        )
+
+    if section.id or section.title or section.quote:
+        return section
+    return None
+
+
+def _parse_issue(raw_issue: Any) -> Optional[DocumentationIssue]:
+    if not isinstance(raw_issue, dict):
+        return None
+
+    fix_raw = _first_value(
+        raw_issue,
+        "Suggested Fix",
+        "suggested_fix",
+        "Fix",
+        "fix",
+        "Suggested Insertion",
+        "suggested_insertion",
+    )
+    if not isinstance(fix_raw, dict):
+        fix_raw = {}
+
+    location_raw = _first_value(
+        fix_raw,
+        "Insert Location",
+        "insert_location",
+        "Location",
+        "location",
+    )
+    if not isinstance(location_raw, dict):
+        location_raw = {}
+
+    issue_type = _first_text(raw_issue, "Type", "type", "issue_type") or "documentation_issue"
+    title = _first_text(raw_issue, "Title", "title", "Issue", "issue")
+    problem = _first_text(raw_issue, "Problem", "problem", "Comment", "comment")
+    solution = _first_text(raw_issue, "Solution", "solution", "Resolution", "resolution")
+    legislation_reference = _first_text(
+        raw_issue,
+        "Legislation Reference",
+        "legislation_reference",
+        "Reference",
+        "reference",
+    )
+
+    insertable_text = (
+        _first_text(
+            fix_raw,
+            "Insertable Text",
+            "insertable_text",
+            "Example Text",
+            "example_text",
+            "Suggested Text",
+            "suggested_text",
+        )
+        or _first_text(
+            raw_issue,
+            "Insertable Text",
+            "insertable_text",
+            "Example Text",
+            "example_text",
+            "Suggested Text",
+            "suggested_text",
+        )
+    )
+
+    insert_location = SuggestedInsertLocation(
+        action=(
+            _first_text(location_raw, "Action", "action")
+            or _first_text(fix_raw, "Action", "action")
+            or "insert"
+        ),
+        target_section_id=(
+            _first_text(location_raw, "Target Section ID", "target_section_id", "ID", "id")
+            or _first_text(fix_raw, "Target Section ID", "target_section_id")
+            or None
+        ),
+        target_section_title=(
+            _first_text(location_raw, "Target Section Title", "target_section_title", "Title", "title")
+            or _first_text(fix_raw, "Target Section Title", "target_section_title")
+            or None
+        ),
+        anchor_quote=(
+            _first_text(location_raw, "Anchor Quote", "anchor_quote", "Anchor Text", "anchor_text")
+            or _first_text(fix_raw, "Anchor Quote", "anchor_quote", "Anchor Text", "anchor_text")
+            or None
+        ),
+        placement=(
+            _first_text(location_raw, "Placement", "placement")
+            or _first_text(fix_raw, "Placement", "placement")
+            or "after"
+        ),
+    )
+
+    issue = DocumentationIssue(
+        issue_id=_first_text(raw_issue, "Issue ID", "issue_id", "id") or None,
+        issue_type=issue_type,
+        title=title,
+        legislation_reference=legislation_reference or None,
+        current_section=_parse_current_section(raw_issue),
+        problem=problem,
+        solution=solution,
+        suggested_fix=SuggestedFix(
+            insertable_text=insertable_text,
+            insert_location=insert_location,
+        ),
+    )
+
+    if (
+        issue.title
+        or issue.problem
+        or issue.solution
+        or issue.suggested_fix.insertable_text
+    ):
+        return issue
+    return None
+
+
+def _assign_issue_id(issue: DocumentationIssue, index: int) -> DocumentationIssue:
+    if issue.issue_id:
+        return issue
+    fingerprint = "|".join(
+        [
+            issue.issue_type,
+            issue.title,
+            issue.legislation_reference or "",
+            issue.problem,
+            issue.suggested_fix.insertable_text[:200],
+        ]
+    )
+    digest = hashlib.sha1(fingerprint.encode("utf-8")).hexdigest()[:12]
+    issue.issue_id = f"issue-{index + 1}-{digest}"
+    return issue
+
+
+def _extract_json_object(text: str) -> Dict[str, Any]:
+    cleaned = text.strip()
+    if "```json" in cleaned:
+        cleaned = cleaned.split("```json", 1)[1]
+    if "```" in cleaned:
+        cleaned = cleaned.split("```")[0]
+    cleaned = cleaned.strip()
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end != -1 and end >= start:
+        cleaned = cleaned[start : end + 1]
+
+    repaired = repair_json(cleaned)
+    data = json.loads(repaired)
+    if not isinstance(data, dict):
+        raise ValueError("Evaluation response was not a JSON object.")
+    return data
+
+
+def _parse_evaluation_output(
+    final_text: str,
+) -> tuple[bool, str, List[str], List[Dict[str, str]], List[DocumentationIssue]]:
+    data = _extract_json_object(final_text)
+
+    exists = bool(data.get("exists", False))
+    explanation = _clean_text(data.get("explanation")) or final_text
+
+    missing_sections: List[str] = []
+    ms_val = data.get("Missing Sections", data.get("missing_sections", []))
+    if isinstance(ms_val, list):
+        missing_sections = [_clean_text(x) for x in ms_val if _clean_text(x)]
+
+    incorrect_sections: List[Dict[str, str]] = []
+    is_val = data.get("Incorrect Sections", data.get("incorrect_sections", []))
+    if isinstance(is_val, list):
+        cleaned_sections: List[Dict[str, str]] = []
+        for item in is_val:
+            if not isinstance(item, dict):
+                continue
+            cleaned_sections.append({
+                "ID": _first_text(item, "ID", "id"),
+                "Quote": _first_text(item, "Quote", "quote"),
+                "Comment": _first_text(item, "Comment", "comment"),
+            })
+        incorrect_sections = [
+            x for x in cleaned_sections if x.get("ID") or x.get("Quote") or x.get("Comment")
+        ]
+
+    issues: List[DocumentationIssue] = []
+    issues_val = (
+        data.get("Issues")
+        or data.get("issues")
+        or data.get("Documentation Issues")
+        or data.get("documentation_issues")
+        or data.get("Issue Suggestions")
+        or data.get("issue_suggestions")
+        or []
+    )
+    if isinstance(issues_val, list):
+        for raw_issue in issues_val:
+            issue = _parse_issue(raw_issue)
+            if issue is not None:
+                issues.append(_assign_issue_id(issue, len(issues)))
+
+    return exists, explanation, missing_sections, incorrect_sections, issues
+
+
+def _issue_suggestions_complete(
+    exists: bool,
+    missing_sections: List[str],
+    incorrect_sections: List[Dict[str, str]],
+    issues: List[DocumentationIssue],
+) -> bool:
+    issue_count = len(missing_sections) + len(incorrect_sections)
+    if issue_count == 0:
+        return exists and not issues
+    if len(issues) < issue_count:
+        return False
+
+    for issue in issues:
+        location = issue.suggested_fix.insert_location
+        has_location = bool(
+            location.target_section_id
+            or location.target_section_title
+            or location.anchor_quote
+        )
+        if not issue.solution.strip():
+            return False
+        if not issue.suggested_fix.insertable_text.strip():
+            return False
+        if not has_location:
+            return False
+    return True
 
 
 async def evaluate_task_with_agent(
@@ -97,6 +403,31 @@ Your final JSON MUST match this structure exactly:
       "Quote": "string (direct quote from the document)",
       "Comment": "string (what is wrong or insufficient, and which topics/sections are required)"
     }
+  ],
+  "Issues": [
+    {
+      "Issue ID": "stable unique issue id, or omit and the backend will assign one",
+      "Type": "missing_section | incorrect_section",
+      "Title": "short issue title",
+      "Legislation Reference": "string or null",
+      "Current Section": {
+        "ID": "TOC section index or article reference, or null if wholly missing",
+        "Title": "document section title, or null if wholly missing",
+        "Quote": "problematic direct quote from the document, or null if wholly missing"
+      },
+      "Problem": "specific documentation problem",
+      "Solution": "specific explanation of how the applicant should address the problem",
+      "Suggested Fix": {
+        "Action": "insert_after_section | append_to_section | replace_text | create_new_section",
+        "Insert Location": {
+          "Target Section ID": "TOC section index where the frontend should insert the text",
+          "Target Section Title": "target document section title",
+          "Anchor Quote": "nearby exact quote to anchor insertion, or null",
+          "Placement": "before | after | replace | end_of_section | new_section"
+        },
+        "Insertable Text": "ready-to-paste example text matching the document's style and facts"
+      }
+    }
   ]
 }
 
@@ -114,6 +445,23 @@ Field guidance:
   - "Quote": a direct verbatim quote from the document showing the problematic text
   - "Comment": what is wrong or insufficient, and which specific topics or sub-sections
     are required to fix it
+- "Issues" is mandatory. For every item in "Missing Sections" and every item in
+  "Incorrect Sections", include exactly one corresponding issue object.
+- Every issue must include a practical solution and insertable example text. The
+  frontend will display "Insertable Text" as grey suggested text that a user can
+  insert into the target location.
+- Use the full documentation context available through the fetched sections and
+  references to draft document-specific text. Reuse the applicant name, service
+  scope, terminology, defined systems, governance bodies, and document tone when
+  they are known from the documentation. Do not use placeholders like [Company],
+  [insert date], or TBD.
+- If you need more context to choose the correct insertion point or write the
+  example text, call GetSections again for nearby, related, or cross-referenced
+  sections before producing the final JSON.
+- For missing coverage, choose the most relevant existing section for insertion,
+  or use "create_new_section" when the document needs a new standalone section.
+- For incorrect coverage, choose "replace_text" only when the quoted text should
+  be replaced; otherwise use "append_to_section" or "insert_after_section".
 - Both "Missing Sections" and "Incorrect Sections" must be fully populated whenever
   gaps exist — do not leave them empty if issues are found.
 """
@@ -350,43 +698,34 @@ Please verify that the document contains information about this:
         explanation = "Failed to parse evaluation response."
         missing_sections: List[str] = []
         incorrect_sections: List[Dict[str, str]] = []
+        issues: List[DocumentationIssue] = []
 
         try:
-            cleaned = final_text.strip()
-            if "```json" in cleaned:
-                cleaned = cleaned.split("```json", 1)[1]
-            if "```" in cleaned:
-                cleaned = cleaned.split("```")[0]
-            cleaned = cleaned.strip()
-
-            start = cleaned.find("{")
-            end = cleaned.rfind("}")
-            if start != -1 and end != -1 and end >= start:
-                cleaned = cleaned[start : end + 1]
-
-            # Use json-repair to fix any syntax slips from the LLM
-            repaired = repair_json(cleaned)
-            data = json.loads(repaired)
-
-            exists = bool(data.get("exists", False))
-            explanation = str(data.get("explanation", "")) or str(data.get("explanation", final_text))
-
-            ms_val = data.get("Missing Sections", data.get("missing_sections", []))
-            if isinstance(ms_val, list):
-                missing_sections = [str(x) for x in ms_val if str(x).strip()]
-
-            is_val = data.get("Incorrect Sections", data.get("incorrect_sections", []))
-            if isinstance(is_val, list):
-                cleaned_sections: List[Dict[str, str]] = []
-                for item in is_val:
-                    if not isinstance(item, dict):
-                        continue
-                    cleaned_sections.append({
-                        "ID": str(item.get("ID", "")).strip(),
-                        "Quote": str(item.get("Quote", "")).strip(),
-                        "Comment": str(item.get("Comment", "")).strip(),
-                    })
-                incorrect_sections = [x for x in cleaned_sections if x.get("ID") or x.get("Quote") or x.get("Comment")]
+            (
+                exists,
+                explanation,
+                missing_sections,
+                incorrect_sections,
+                issues,
+            ) = _parse_evaluation_output(final_text)
+            if (
+                not _issue_suggestions_complete(exists, missing_sections, incorrect_sections, issues)
+                and attempt < AGENT_MAX_TOOL_CALLS - 1
+            ):
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "Your JSON identifies documentation issues but does not include a complete "
+                        "Issues entry for every missing or incorrect section. Return the full corrected "
+                        "raw JSON now. Each issue must include Solution, Suggested Fix.Insert Location, "
+                        "and Suggested Fix.Insertable Text."
+                    ),
+                })
+                logger.warning(
+                    "[eval] Issue suggestions incomplete for task: %s; requesting corrected JSON",
+                    task_label,
+                )
+                continue
 
         except Exception as e:
             logger.warning("[eval] Failed to parse agent JSON output: %s. Error: %s", final_text, e)
@@ -406,5 +745,6 @@ Please verify that the document contains information about this:
             explanation=explanation,
             missing_sections=missing_sections,
             incorrect_sections=incorrect_sections,
+            issues=issues,
             reasoning_steps=reasoning_steps,
         )

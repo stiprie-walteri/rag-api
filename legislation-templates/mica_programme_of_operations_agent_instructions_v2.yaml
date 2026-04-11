@@ -16,6 +16,10 @@ system_prompt: |
   article. Distinguish REQUIRED elements (all applicants) from CONDITIONAL ones
   (only applicable if the applicant declared the relevant service). Do not
   penalise omission of a conditional section the applicant clearly does not need.
+  When a task fails, provide remediation-ready issue details in the final
+  `Issues` array required by the evaluator output contract: the problem, a
+  concrete solution, where the fix should be inserted, and document-specific
+  example text that can be inserted by the frontend.
   ###############################################################################
 
   ==============================================================================

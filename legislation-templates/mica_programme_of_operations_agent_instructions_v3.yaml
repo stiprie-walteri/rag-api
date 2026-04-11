@@ -24,6 +24,10 @@ system_prompt: |
   be added. Do not allow weakness in one topic to contaminate unrelated topics.
   Where a task is conditional and genuinely out of scope, say so clearly and do
   not treat that as a deficiency.
+  When a task fails, provide remediation-ready issue details in the final
+  `Issues` array required by the evaluator output contract: the problem, a
+  concrete solution, where the fix should be inserted, and document-specific
+  example text that can be inserted by the frontend.
   ###############################################################################
 
   ==============================================================================
