@@ -55,6 +55,7 @@ class TaskEvaluationResult(BaseModel):
     legislation_id: Optional[str] = None
     legislation_name: Optional[str] = None
     task: List[str]
+    status: str = "completed"
     exists: bool
     explanation: str
     missing_sections: List[str] = []

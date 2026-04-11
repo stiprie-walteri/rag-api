@@ -4,7 +4,8 @@
       "Bash(wc:*)",
       "Bash(python -c \"import ast; ast.parse\\(open\\('app/api/routes/documents.py'\\).read\\(\\)\\); print\\('documents.py OK'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('app/api/routes/projects.py'\\).read\\(\\)\\); print\\('projects.py OK'\\)\")",
-      "Bash(python -c \"import ast; ast.parse\\(open\\('app/services/evaluation/agent.py'\\).read\\(\\)\\); print\\('agent.py OK'\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/services/evaluation/agent.py'\\).read\\(\\)\\); print\\('agent.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/services/evaluation/state.py'\\).read\\(\\)\\); print\\('state.py OK'\\)\")"
     ]
   }
 }

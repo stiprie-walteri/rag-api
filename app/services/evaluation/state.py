@@ -35,6 +35,10 @@ def _current_key(target_key: str) -> str:
     return f"eval:current:{target_key}"
 
 
+def _cancel_key(job_id: str) -> str:
+    return f"eval:cancel:{job_id}"
+
+
 def _compute_progress_percent(*, completed_count: int, total_tasks: int) -> int:
     if total_tasks <= 0:
         return 0
@@ -286,3 +290,25 @@ async def get_job_states_for_documents(document_ids: list[str]) -> dict[str, dic
         job_states[doc_id] = json.loads(raw) if raw else None
 
     return {doc_id: job_states.get(doc_id) for doc_id in document_ids}
+
+
+async def request_cancel(job_id: str) -> bool:
+    client = get_redis_client()
+    raw = await client.get(_job_key(job_id))
+    if not raw:
+        return False
+    state = json.loads(raw)
+    if state.get("status") != "running":
+        return False
+    await client.set(_cancel_key(job_id), "1", ex=LOCK_TTL_SECONDS)
+    return True
+
+
+async def is_cancel_requested(job_id: str) -> bool:
+    client = get_redis_client()
+    return await client.exists(_cancel_key(job_id)) == 1
+
+
+async def clear_cancel(job_id: str) -> None:
+    client = get_redis_client()
+    await client.delete(_cancel_key(job_id))

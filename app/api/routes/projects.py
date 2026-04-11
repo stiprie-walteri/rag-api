@@ -178,8 +178,13 @@ async def _run_project_evaluation_background(
                 }
             )
 
+        cancelled = False
+
         async def _run_one(idx: int, run: dict, task_list: list[str]) -> None:
-            nonlocal completed_count
+            nonlocal completed_count, cancelled
+            if await eval_state.is_cancel_requested(job_id):
+                cancelled = True
+                return
             async with state_lock:
                 await eval_state.update_progress(
                     job_id,
@@ -189,6 +194,9 @@ async def _run_project_evaluation_background(
                     activity_message=f"Started {run['template_name']} task: {task_list[0]}",
                     phase="task_start",
                 )
+            if await eval_state.is_cancel_requested(job_id):
+                cancelled = True
+                return
             result = await evaluate_task_with_agent(
                 task_list=task_list,
                 chunks=chunks_raw,
@@ -215,12 +223,25 @@ async def _run_project_evaluation_background(
 
         await asyncio.gather(*(_run_one(i, run, task_list) for i, run, task_list in scheduled_runs))
 
+        # Fill un-analyzed tasks with "cancelled" status
+        for idx, run, task_list in scheduled_runs:
+            if results[idx] is None:
+                results[idx] = TaskEvaluationResult(
+                    legislation_id=run["template_id"],
+                    legislation_name=run["template_name"],
+                    task=task_list,
+                    status="cancelled",
+                    exists=False,
+                    explanation="Task was not analyzed due to evaluation cancellation.",
+                )
+
+        status_label = "cancelled" if cancelled else "complete"
         await eval_state.update_progress(
             job_id,
             current_task=None,
             completed_count=completed_count,
-            status_message="Finalizing project report.",
-            activity_message="All tasks finished. Building grouped legislation output.",
+            status_message=f"Finalizing project report ({status_label}).",
+            activity_message=f"Building grouped legislation output ({status_label}).",
             phase="finalize",
         )
 
@@ -257,7 +278,11 @@ async def _run_project_evaluation_background(
             project_id=project_id,
             result=compliance_result,
         )
-        await eval_state.complete_job(job_id, status_message="Project analysis complete.")
+        await eval_state.clear_cancel(job_id)
+        if cancelled:
+            await eval_state.complete_job(job_id, status_message="Project analysis cancelled. Partial results saved.")
+        else:
+            await eval_state.complete_job(job_id, status_message="Project analysis complete.")
     except Exception as exc:
         await eval_state.fail_job(job_id, str(exc), status_message="Project analysis failed.")
     finally:
@@ -527,6 +552,42 @@ async def evaluate_project(
         status="running",
         status_message="Queued project analysis.",
     )
+
+
+@router.post(
+    "/api/orgs/{organization_id}/projects/{project_id}/evaluate/cancel",
+    status_code=200,
+)
+async def cancel_project_evaluation(
+    organization_id: str,
+    project_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+):
+    service = require_docstore()
+    org_context = await sync_authenticated_org(
+        service, auth, requested_organization_id=organization_id, create_if_missing=False
+    )
+
+    try:
+        await service.get_project(
+            organization_id=org_context["organization_id"],
+            project_id=project_id,
+            actor_user_id=auth.user_id,
+        )
+    except ProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OrganizationMismatchError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    job_id = await eval_state.get_current_job_id(_project_target_key(project_id))
+    if not job_id:
+        raise HTTPException(status_code=404, detail="No running evaluation found for this project.")
+
+    success = await eval_state.request_cancel(job_id)
+    if not success:
+        raise HTTPException(status_code=409, detail="Evaluation is not running or has already finished.")
+
+    return {"job_id": job_id, "status": "cancelling", "message": "Cancellation requested. Completed results will be saved."}
 
 
 @router.get(
