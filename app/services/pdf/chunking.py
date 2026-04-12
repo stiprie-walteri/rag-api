@@ -1,6 +1,75 @@
 import fitz
 import re
 
+
+FALLBACK_CHUNK_MAX_CHARS = 3500
+
+
+def _has_meaningful_chunks(chunks: list[dict]) -> bool:
+    return any((chunk.get("text") or "").strip() for chunk in chunks)
+
+
+def _page_to_text(page: fitz.Page) -> str:
+    return page.get_text("text").strip()
+
+
+def extract_fallback_chunks(doc: fitz.Document, max_chars: int = FALLBACK_CHUNK_MAX_CHARS) -> list:
+    """Builds sequential text chunks from page content when structural chunking is unavailable."""
+    page_entries: list[tuple[int, str]] = []
+
+    for page_index in range(len(doc)):
+        page_text = _page_to_text(doc.load_page(page_index))
+        if page_text:
+            page_entries.append((page_index + 1, page_text))
+
+    if not page_entries:
+        return []
+
+    chunks = []
+    current_pages: list[int] = []
+    current_parts: list[str] = []
+    current_size = 0
+
+    for page_number, page_text in page_entries:
+        part_size = len(page_text)
+        should_flush = current_parts and current_size + part_size + 2 > max_chars
+        if should_flush:
+            chunks.append(
+                {
+                    "level": 1,
+                    "title": _fallback_title(current_pages[0], current_pages[-1]),
+                    "start_page": current_pages[0],
+                    "end_page": current_pages[-1],
+                    "text": "\n\n".join(current_parts).strip(),
+                }
+            )
+            current_pages = []
+            current_parts = []
+            current_size = 0
+
+        current_pages.append(page_number)
+        current_parts.append(page_text)
+        current_size += part_size + 2
+
+    if current_parts:
+        chunks.append(
+            {
+                "level": 1,
+                "title": _fallback_title(current_pages[0], current_pages[-1]),
+                "start_page": current_pages[0],
+                "end_page": current_pages[-1],
+                "text": "\n\n".join(current_parts).strip(),
+            }
+        )
+
+    return chunks
+
+
+def _fallback_title(start_page: int, end_page: int) -> str:
+    if start_page == end_page:
+        return f"Page {start_page}"
+    return f"Pages {start_page}-{end_page}"
+
 def get_fallback_toc(doc: fitz.Document) -> list:
     """Generates a pseudo-TOC by scanning the first 10 pages for internal links."""
     all_dests = []
@@ -119,15 +188,18 @@ def extract_chunks_from_toc(doc: fitz.Document, toc: list) -> list:
     return chunks
 
 def chunk_pdf(pdf_bytes: bytes) -> list:
-    """Takes PDF bytes and returns extracted section chunks using TOC/Internal Links."""
+    """Takes PDF bytes and returns structural chunks, or page-based fallback chunks when needed."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    
-    # We need simple=False to get the destination properties (the exact Point with x and y coordinates)
-    toc = doc.get_toc(simple=False)
-    
-    # Fallback to internal links if no TOC
-    if not toc:
-        toc = get_fallback_toc(doc)
-            
-    chunks = extract_chunks_from_toc(doc, toc)
-    return chunks
+
+    try:
+        toc = doc.get_toc(simple=False)
+        if not toc:
+            toc = get_fallback_toc(doc)
+
+        chunks = extract_chunks_from_toc(doc, toc)
+        if _has_meaningful_chunks(chunks):
+            return chunks
+    except Exception:
+        pass
+
+    return extract_fallback_chunks(doc)
