@@ -87,6 +87,7 @@ Default endpoints from this compose stack:
 - `PATCH /api/orgs/{organization_id}/documents/{document_id}/project`
 - `GET /api/orgs/{organization_id}/documents/{document_id}`
 - `GET /api/orgs/{organization_id}/documents/{document_id}/versions/{version_no}`
+- `POST /api/orgs/{organization_id}/documents/{document_id}/versions/{version_no}/suggestions/apply`
 - `GET /api/orgs/{organization_id}/documents/{document_id}/versions`
 - `POST /api/admin/docstore/gc` (GC placeholder hook)
 
@@ -107,6 +108,68 @@ Each authenticated Clerk user gets exactly one private internal workspace. There
 - `GET /api/orgs/{organization_id}/projects/{project_id}/compliance` returns the latest persisted project-wide analysis result.
 - The project evaluation process continues server-side even if the frontend tab closes or stops polling.
 - The status endpoint now includes loader-friendly fields: `status_message`, `progress_percent`, and `activity`.
+
+## Evaluation issue suggestions
+Evaluation results still include the legacy `missing_sections` and `incorrect_sections` fields. Each result also includes `issues`, a frontend-friendly list of insertable fixes:
+
+```json
+{
+  "issues": [
+    {
+      "issue_id": "issue-1-abc123def456",
+      "issue_type": "missing_section",
+      "title": "Complaints handling procedure missing",
+      "legislation_reference": "Art. 62(2)(l) MiCA",
+      "current_section": null,
+      "problem": "The document does not describe complaint intake or resolution.",
+      "solution": "Add an operational complaints-handling section with intake, acknowledgement, investigation, escalation, response timing, ADR, records, and root-cause analysis.",
+      "suggested_fix": {
+        "insertable_text": "### Complaints Handling\n\nNEXUS will accept complaints in writing, by email, through the client portal, and in person.",
+        "insert_location": {
+          "action": "create_new_section",
+          "target_section_id": "11",
+          "target_section_title": "Client Communications",
+          "anchor_quote": "NEXUS provides clients with clear communications.",
+          "placement": "after"
+        }
+      }
+    }
+  ]
+}
+```
+
+The frontend can render `suggested_fix.insertable_text` as the grey insertable text and use `insert_location` to place it near the target section or anchor quote.
+
+To let the backend apply accepted suggestions to a Markdown document version:
+
+```http
+POST /api/orgs/{organization_id}/documents/{document_id}/versions/{version_no}/suggestions/apply
+Content-Type: application/json
+```
+
+Preview only:
+
+```json
+{
+  "issue_ids": ["issue-1-abc123def456"],
+  "save": false,
+  "expected_content_hash": "sha256..."
+}
+```
+
+Save as a new document version:
+
+```json
+{
+  "issue_ids": ["issue-1-abc123def456"],
+  "save": true,
+  "allow_partial": false,
+  "message": "Applied AI compliance suggestions",
+  "expected_content_hash": "sha256..."
+}
+```
+
+The request may also send full `issues` objects instead of `issue_ids`, which is useful for project-level issues or unsaved frontend state. The response includes `patched_content_md`, per-issue `applications`, counts for applied/skipped/failed suggestions, and `saved_version` when `save` is true. Saved suggestion edits regenerate Markdown chunks for the new version so the edited document can be evaluated again.
 
 ## System instructions
 - Editable prompt files live in `system-instructions/`.

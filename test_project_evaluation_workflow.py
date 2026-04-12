@@ -155,6 +155,12 @@ class _InMemoryEvalState:
     async def get_job_state(self, job_id: str) -> dict | None:
         return self.jobs.get(job_id)
 
+    async def is_cancel_requested(self, job_id: str) -> bool:
+        return False
+
+    async def clear_cancel(self, job_id: str) -> None:
+        return None
+
 
 class ProjectEvaluationWorkflowTests(unittest.IsolatedAsyncioTestCase):
     async def test_project_evaluation_uses_multiple_documents_and_multiple_legislations(self):

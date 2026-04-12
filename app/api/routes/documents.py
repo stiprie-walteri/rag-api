@@ -4,6 +4,7 @@ import logging
 import tempfile
 import uuid
 from datetime import datetime
+from typing import Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
@@ -27,6 +28,12 @@ from app.services.evaluation.agent import (
 )
 from app.services.evaluation import state as eval_state
 from app.services.legislation.templates import get_legislation_template
+from app.services.markdown.editor import (
+    apply_issue_suggestions,
+    chunk_markdown,
+    normalize_issues,
+    resolve_issues_locations,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +305,14 @@ async def _process_single_upload(
         markdown_bytes = raw_bytes
 
     try:
+        markdown_text = markdown_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Markdown content must be valid UTF-8.") from exc
+
+    if chunks is None:
+        chunks = chunk_markdown(markdown_text)
+
+    try:
         result = await service.create_version(
             organization_id=organization_id,
             actor_user_id=actor_user_id,
@@ -529,11 +544,123 @@ class DocumentComplianceResultResponse(BaseModel):
     version_id: str
     compliance_result: dict | None = None
 
+class ApplySuggestionRequest(BaseModel):
+    issues: list[dict[str, Any]] | None = None
+    issue_ids: list[str] | None = None
+    save: bool = False
+    allow_partial: bool = False
+    message: str | None = None
+    expected_content_hash: str | None = None
+
+
+class SuggestionApplicationResult(BaseModel):
+    issue_id: str
+    title: str
+    action: str
+    status: str
+    reason: str | None = None
+    match_strategy: str | None = None
+    start_index: int | None = None
+    end_index: int | None = None
+
+
+class ApplySuggestionResponse(BaseModel):
+    document_id: str
+    source_version_id: str
+    source_version_no: int
+    source_content_hash: str
+    patched_content_md: str
+    applied_count: int
+    skipped_count: int
+    failed_count: int
+    applications: list[SuggestionApplicationResult]
+    saved_version: DocumentVersionMetadata | None = None
+
+
+def _collect_issues_from_compliance(compliance_result: dict | None) -> list[dict]:
+    if not compliance_result:
+        return []
+
+    issues: list[dict] = []
+
+    def add_from_results(results: list | None) -> None:
+        if not isinstance(results, list):
+            return
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            for issue in result.get("issues") or []:
+                if isinstance(issue, dict):
+                    issues.append(issue)
+
+    add_from_results(compliance_result.get("results"))
+
+    if not issues:
+        for legislation in compliance_result.get("legislations") or []:
+            if isinstance(legislation, dict):
+                add_from_results(legislation.get("results"))
+
+    return normalize_issues(issues)
+
+
+def _select_suggestion_issues(
+    *,
+    request: ApplySuggestionRequest,
+    compliance_result: dict | None,
+) -> list[dict]:
+    if request.issues:
+        issues = normalize_issues(request.issues)
+    else:
+        issues = _collect_issues_from_compliance(compliance_result)
+
+    if request.issue_ids is None:
+        return issues
+
+    wanted = {issue_id.strip() for issue_id in request.issue_ids if issue_id.strip()}
+    if not wanted:
+        return []
+    return [issue for issue in issues if issue["issue_id"] in wanted]
+
+
+def _resolve_issue_locations_from_chunks(issues: list[dict], chunks: list[dict]) -> list[dict]:
+    if not chunks:
+        return issues
+
+    by_key: dict[str, dict] = {}
+    for index, chunk in enumerate(chunks):
+        by_key[str(index)] = chunk
+        if chunk.get("id") is not None:
+            by_key[str(chunk["id"])] = chunk
+
+    resolved: list[dict] = []
+    for issue in issues:
+        issue_copy = {
+            **issue,
+            "suggested_fix": {
+                **issue.get("suggested_fix", {}),
+                "insert_location": {
+                    **(issue.get("suggested_fix", {}).get("insert_location") or {})
+                },
+            },
+        }
+        location = issue_copy["suggested_fix"]["insert_location"]
+        section_id = location.get("target_section_id")
+        chunk = by_key.get(str(section_id)) if section_id is not None else None
+        if chunk:
+            location["target_section_title"] = location.get("target_section_title") or chunk.get("title")
+            if issue_copy.get("current_section") is None:
+                issue_copy["current_section"] = {
+                    "id": str(section_id),
+                    "title": chunk.get("title"),
+                    "quote": None,
+                }
+        resolved.append(issue_copy)
+    return resolved
 
 def _augment_compliance_result(comp_result: dict | None) -> dict | None:
     if not comp_result or "results" not in comp_result:
         return comp_result
-    
+
     results_list = comp_result["results"]
     total_tasks = len(results_list)
     if total_tasks > 0:
@@ -543,10 +670,10 @@ def _augment_compliance_result(comp_result: dict | None) -> dict | None:
             r["is_correct"] = is_correct
             if is_correct:
                 correct_count += 1
-        
+
         incorrect_tasks = total_tasks - correct_count
         comp_result["correctness_score"] = int(((total_tasks - incorrect_tasks) / total_tasks) * 100)
-    
+
     return comp_result
 
 @router.get(
@@ -670,6 +797,139 @@ async def get_document_version(
         document=_to_document_metadata(result["document"]),
         version=version_metadata,
         content_md=result["content_bytes"].decode("utf-8"),
+    )
+
+
+@router.post(
+    "/api/orgs/{organization_id}/documents/{document_id}/versions/{version_no}/suggestions/apply",
+    response_model=ApplySuggestionResponse,
+)
+async def apply_document_suggestions(
+    organization_id: str,
+    document_id: str,
+    version_no: int,
+    request: ApplySuggestionRequest,
+    auth: AuthContext = Depends(get_auth_context),
+):
+    if version_no <= 0:
+        raise HTTPException(status_code=400, detail="version_no must be greater than 0.")
+
+    service = require_docstore()
+    org_context = await sync_authenticated_org(
+        service,
+        auth,
+        requested_organization_id=organization_id,
+        create_if_missing=False,
+    )
+
+    try:
+        result = await service.get_document_version(
+            organization_id=org_context["organization_id"],
+            document_id=document_id,
+            version_no=version_no,
+            actor_user_id=auth.user_id,
+        )
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OrganizationMismatchError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except DocumentAccessDeniedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except DocumentVersionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    version = result["version"]
+    if request.expected_content_hash and request.expected_content_hash != version["content_hash"]:
+        raise HTTPException(status_code=409, detail="Source document version content hash does not match.")
+
+    issues = _select_suggestion_issues(
+        request=request,
+        compliance_result=version.get("compliance_result"),
+    )
+    if not issues:
+        raise HTTPException(status_code=400, detail="No suggestion issues were provided or found on the version.")
+
+    try:
+        chunks_raw = await service.get_document_chunks(
+            organization_id=org_context["organization_id"],
+            document_id=document_id,
+            version_id=version["version_id"],
+            actor_user_id=auth.user_id,
+        )
+    except DocumentAccessDeniedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    issues = _resolve_issue_locations_from_chunks(issues, chunks_raw)
+
+    original_markdown = result["content_bytes"].decode("utf-8")
+    patch_result = apply_issue_suggestions(original_markdown, issues)
+    patched_markdown = patch_result["patched_markdown"]
+
+    if request.save:
+        if version["version_id"] != result["document"].get("current_version_id"):
+            raise HTTPException(
+                status_code=409,
+                detail="Suggestions can only be saved against the current document version.",
+            )
+        if patch_result["failed_count"] and not request.allow_partial:
+            raise HTTPException(
+                status_code=409,
+                detail="One or more suggestions could not be applied. Retry with allow_partial=true to save partial edits.",
+            )
+        if patched_markdown == original_markdown:
+            raise HTTPException(status_code=400, detail="No document changes were produced by the suggestions.")
+
+    saved_version: DocumentVersionMetadata | None = None
+    if request.save:
+        try:
+            saved_raw = await service.create_version(
+                organization_id=org_context["organization_id"],
+                actor_user_id=auth.user_id,
+                markdown_bytes=patched_markdown.encode("utf-8"),
+                document_id=document_id,
+                project_id=result["document"].get("project_id"),
+                title=None,
+                message=request.message or "Applied AI compliance suggestions",
+            )
+            await service.save_document_chunks(
+                organization_id=org_context["organization_id"],
+                document_id=document_id,
+                version_id=saved_raw["version_id"],
+                chunks=chunk_markdown(patched_markdown),
+            )
+            saved_result = await service.get_document_version(
+                organization_id=org_context["organization_id"],
+                document_id=document_id,
+                version_no=saved_raw["version_no"],
+                actor_user_id=auth.user_id,
+            )
+            saved_version = _to_version_metadata(saved_result["version"])
+        except DocumentNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except OrganizationMismatchError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except DocumentAccessDeniedError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except DocumentVersionNotFoundError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return ApplySuggestionResponse(
+        document_id=document_id,
+        source_version_id=version["version_id"],
+        source_version_no=version["version_no"],
+        source_content_hash=version["content_hash"],
+        patched_content_md=patched_markdown,
+        applied_count=patch_result["applied_count"],
+        skipped_count=patch_result["skipped_count"],
+        failed_count=patch_result["failed_count"],
+        applications=[
+            SuggestionApplicationResult(**application)
+            for application in patch_result["applications"]
+        ],
+        saved_version=saved_version,
     )
 
 
@@ -804,8 +1064,11 @@ async def _run_evaluation_background(
     organization_id: str,
     evaluation_runs: list[dict],
     chunks_raw: list[dict],
+    full_markdown: str,
     service: DocumentStorageService,
 ) -> None:
+    from app.services.evaluation.agent import DocumentationIssue
+
     try:
         exploratory_summary = await build_exploratory_document_summary(chunks_raw)
         total_tasks = sum(len(run["tasks"]) for run in evaluation_runs)
@@ -850,6 +1113,15 @@ async def _run_evaluation_background(
                     references=run.get("references"),
                     exploratory_summary=exploratory_summary,
                 )
+
+                # Enrich issues with start_index/end_index
+                if result.issues:
+                    enriched_dicts = resolve_issues_locations(
+                        full_markdown,
+                        [i.model_dump() for i in result.issues]
+                    )
+                    result.issues = [DocumentationIssue(**i) for i in enriched_dicts]
+
                 result.legislation_id = run["template_id"]
                 result.legislation_name = run["template_name"]
                 results[idx] = result
@@ -1014,6 +1286,7 @@ async def evaluate_document_tasks(
             organization_id=org_context["organization_id"],
             evaluation_runs=evaluation_runs,
             chunks_raw=chunks_raw,
+            full_markdown=ver_result["content_bytes"].decode("utf-8"),
             service=service,
         )
     )

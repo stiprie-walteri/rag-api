@@ -88,6 +88,31 @@ task_evaluation:
           "Quote": "string (direct quote from the document)",
           "Comment": "string (what is wrong or insufficient, and which topics/sections are required)"
         }
+      ],
+      "Issues": [
+        {
+          "Issue ID": "stable unique issue id, or omit and the backend will assign one",
+          "Type": "missing_section | incorrect_section",
+          "Title": "short issue title",
+          "Legislation Reference": "string or null",
+          "Current Section": {
+            "ID": "TOC section index or article reference, or null if wholly missing",
+            "Title": "document section title, or null if wholly missing",
+            "Quote": "problematic direct quote from the document, or null if wholly missing"
+          },
+          "Problem": "specific documentation problem",
+          "Solution": "specific explanation of how the applicant should address the problem",
+          "Suggested Fix": {
+            "Action": "insert_after_section | append_to_section | replace_text | create_new_section",
+            "Insert Location": {
+              "Target Section ID": "TOC section index where the frontend should insert the text",
+              "Target Section Title": "target document section title",
+              "Anchor Quote": "nearby exact quote to anchor insertion, or null",
+              "Placement": "before | after | replace | end_of_section | new_section"
+            },
+            "Insertable Text": "ready-to-paste example text matching the document's style and facts"
+          }
+        }
       ]
     }
 
@@ -105,6 +130,23 @@ task_evaluation:
       - "Quote": a direct verbatim quote from the document showing the problematic text
       - "Comment": what is wrong or insufficient, and which specific topics or sub-sections
         are required to fix it
+    - "Issues" is mandatory. For every item in "Missing Sections" and every item in
+      "Incorrect Sections", include exactly one corresponding issue object.
+    - Every issue must include a practical solution and insertable example text. The
+      frontend will display "Insertable Text" as grey suggested text that a user can
+      insert into the target location.
+    - Use the full documentation context available through the fetched sections and
+      references to draft document-specific text. Reuse the applicant name, service
+      scope, terminology, defined systems, governance bodies, and document tone when
+      they are known from the documentation. Do not use placeholders like [Company],
+      [insert date], or TBD.
+    - If you need more context to choose the correct insertion point or write the
+      example text, call GetSections again for nearby, related, or cross-referenced
+      sections before producing the final JSON.
+    - For missing coverage, choose the most relevant existing section for insertion,
+      or use "create_new_section" when the document needs a new standalone section.
+    - For incorrect coverage, choose "replace_text" only when the quoted text should
+      be replaced; otherwise use "append_to_section" or "insert_after_section".
     - Both "Missing Sections" and "Incorrect Sections" must be fully populated whenever
       gaps exist — do not leave them empty if issues are found.
 

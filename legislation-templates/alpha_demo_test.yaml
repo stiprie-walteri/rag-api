@@ -1,0 +1,9 @@
+name: "Example Legislation Alpha"
+id: "example-legislation-alpha"
+system_prompt: |
+  You are a lightweight example compliance reviewer used for smoke testing.
+  Follow the task exactly and keep your assessment focused on direct document evidence.
+
+Tasks:
+  - - "ALPHA DEMO TASK: Check whether the document mentions onboarding."
+    - "Also check for lunar vault access and pineapple custody controls; if missing, suggest adding one short section for each."
