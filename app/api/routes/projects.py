@@ -9,8 +9,13 @@ from app.api.dependencies import require_docstore, sync_authenticated_org
 from app.api.routes.documents import DocumentListResponse, _to_document_list_item
 from app.core.auth import AuthContext, get_auth_context
 from app.services.evaluation import state as eval_state
-from app.services.evaluation.agent import TaskEvaluationResult, evaluate_task_with_agent
+from app.services.evaluation.agent import (
+    DocumentationIssue,
+    TaskEvaluationResult,
+    evaluate_task_with_agent,
+)
 from app.services.legislation.templates import get_legislation_template, validate_template_ids
+from app.services.markdown.editor import resolve_issues_locations
 from app.services.storage.service import (
     DocumentAccessDeniedError,
     DocumentNotFoundError,
@@ -121,6 +126,9 @@ async def _run_project_evaluation_background(
 ) -> None:
     target_key = _project_target_key(project_id)
     try:
+        # Reconstruct combined markdown for location resolution
+        full_markdown = "\n\n".join(c.get("text_content", "") for c in chunks_raw)
+
         await eval_state.update_progress(
             job_id,
             current_task=None,
@@ -170,6 +178,15 @@ async def _run_project_evaluation_background(
                 system_prompt_override=run.get("system_prompt_override"),
                 references=run.get("references"),
             )
+
+            # Enrich issues with start_index/end_index
+            if result.issues:
+                enriched_dicts = resolve_issues_locations(
+                    full_markdown,
+                    [i.model_dump() for i in result.issues]
+                )
+                result.issues = [DocumentationIssue(**i) for i in enriched_dicts]
+
             result.legislation_id = run["template_id"]
             result.legislation_name = run["template_name"]
             results[idx] = result

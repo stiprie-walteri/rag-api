@@ -110,6 +110,8 @@ def normalize_issue(issue: Any, index: int = 0) -> dict[str, Any]:
                     or None
                 ),
                 "placement": _text(_lookup(insert_location, "placement", "Placement")) or "after",
+                "start_index": _lookup(insert_location, "start_index", "start", "startIndex", "StartIndex") or None,
+                "end_index": _lookup(insert_location, "end_index", "end", "endIndex", "EndIndex") or None,
             },
         },
     }
@@ -277,6 +279,8 @@ def apply_issue_suggestions(markdown: str, issues: list[Any]) -> dict[str, Any]:
                         "status": "applied",
                         "reason": None,
                         "match_strategy": strategy,
+                        "start_index": start,
+                        "end_index": end,
                     }
                 )
                 continue
@@ -292,6 +296,8 @@ def apply_issue_suggestions(markdown: str, issues: list[Any]) -> dict[str, Any]:
                         "status": "applied",
                         "reason": None,
                         "match_strategy": "target_section_title",
+                        "start_index": section_end,
+                        "end_index": section_end,
                     }
                 )
                 continue
@@ -308,12 +314,15 @@ def apply_issue_suggestions(markdown: str, issues: list[Any]) -> dict[str, Any]:
                         "status": "applied",
                         "reason": None,
                         "match_strategy": strategy,
+                        "start_index": insert_at,
+                        "end_index": insert_at,
                     }
                 )
                 continue
 
             if action == "create_new_section":
-                patched = _insert_at(patched, len(patched), insertable_text)
+                insert_at = len(patched)
+                patched = _insert_at(patched, insert_at, insertable_text)
                 applications.append(
                     {
                         "issue_id": issue_id,
@@ -322,6 +331,8 @@ def apply_issue_suggestions(markdown: str, issues: list[Any]) -> dict[str, Any]:
                         "status": "applied",
                         "reason": None,
                         "match_strategy": "document_end",
+                        "start_index": insert_at,
+                        "end_index": insert_at,
                     }
                 )
                 continue
@@ -336,6 +347,8 @@ def apply_issue_suggestions(markdown: str, issues: list[Any]) -> dict[str, Any]:
                     "status": "failed",
                     "reason": str(exc),
                     "match_strategy": None,
+                    "start_index": None,
+                    "end_index": None,
                 }
             )
 
@@ -346,3 +359,50 @@ def apply_issue_suggestions(markdown: str, issues: list[Any]) -> dict[str, Any]:
         "skipped_count": sum(1 for item in applications if item["status"] == "skipped"),
         "failed_count": sum(1 for item in applications if item["status"] == "failed"),
     }
+
+
+def resolve_issue_location(markdown: str, issue: dict[str, Any]) -> dict[str, Any]:
+    """
+    Enriches an issue with start_index and end_index based on its suggested_fix.insert_location.
+    """
+    fix = issue.get("suggested_fix") or {}
+    location = fix.get("insert_location") or {}
+    action = location.get("action")
+    current_section = issue.get("current_section") or {}
+
+    anchor_match = _find_exact_or_normalized(
+        markdown,
+        location.get("anchor_quote") or current_section.get("quote"),
+    )
+    heading_bounds = _find_heading_bounds(markdown, location.get("target_section_title"))
+
+    start = None
+    end = None
+
+    if action == "replace_text" and anchor_match:
+        start, end, _ = anchor_match
+    elif action in {"append_to_section", "insert_after_section", "create_new_section"} and heading_bounds:
+        _, section_end, _ = heading_bounds
+        start = section_end
+        end = section_end
+    elif anchor_match:
+        m_start, m_end, _ = anchor_match
+        pos = m_start if location.get("placement") == "before" else m_end
+        start = pos
+        end = pos
+    elif action == "create_new_section":
+        start = len(markdown)
+        end = len(markdown)
+
+    if start is not None and end is not None:
+        location["start_index"] = start
+        location["end_index"] = end
+
+    return issue
+
+
+def resolve_issues_locations(markdown: str, issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Enriches a list of issues with start_index and end_index.
+    """
+    return [resolve_issue_location(markdown, issue) for issue in issues]

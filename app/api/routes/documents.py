@@ -24,7 +24,12 @@ from app.services.pdf.converter import convert_pdf_to_markdown
 from app.services.evaluation.agent import evaluate_task_with_agent, TaskEvaluationResult
 from app.services.evaluation import state as eval_state
 from app.services.legislation.templates import get_legislation_template
-from app.services.markdown.editor import apply_issue_suggestions, chunk_markdown, normalize_issues
+from app.services.markdown.editor import (
+    apply_issue_suggestions,
+    chunk_markdown,
+    normalize_issues,
+    resolve_issues_locations,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -455,6 +460,8 @@ class SuggestionApplicationResult(BaseModel):
     status: str
     reason: str | None = None
     match_strategy: str | None = None
+    start_index: int | None = None
+    end_index: int | None = None
 
 
 class ApplySuggestionResponse(BaseModel):
@@ -933,7 +940,26 @@ async def _run_evaluation_background(
     chunks_raw: list[dict],
     service: DocumentStorageService,
 ) -> None:
+    from app.services.evaluation.agent import DocumentationIssue
+
     try:
+        # Fetch full markdown for location resolution
+        async with await psycopg.AsyncConnection.connect(service.settings.postgres_dsn, row_factory=dict_row) as conn:
+            async with conn.cursor() as cur:
+                version_row = await service._get_version_by_id(
+                    cur,
+                    organization_id=organization_id,
+                    document_id=document_id,
+                    version_id=version_id,
+                )
+        if not version_row:
+            logger.error("[eval] Job %s: version %s not found", job_id, version_id)
+            await eval_state.fail_job(job_id, f"Document version {version_id} not found.")
+            return
+
+        content_bytes = await service.minio_get(service.settings.minio_bucket, version_row["object_key"])
+        full_markdown = content_bytes.decode("utf-8")
+
         total_tasks = sum(len(run["tasks"]) for run in evaluation_runs)
         results: list[TaskEvaluationResult | None] = [None] * total_tasks
         completed_count = 0
@@ -975,6 +1001,15 @@ async def _run_evaluation_background(
                     system_prompt_override=run.get("system_prompt_override"),
                     references=run.get("references"),
                 )
+
+                # Enrich issues with start_index/end_index
+                if result.issues:
+                    enriched_dicts = resolve_issues_locations(
+                        full_markdown,
+                        [i.model_dump() for i in result.issues]
+                    )
+                    result.issues = [DocumentationIssue(**i) for i in enriched_dicts]
+
                 result.legislation_id = run["template_id"]
                 result.legislation_name = run["template_name"]
                 results[idx] = result

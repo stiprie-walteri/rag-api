@@ -49,6 +49,8 @@ class SuggestedInsertLocation(BaseModel):
     target_section_title: Optional[str] = None
     anchor_quote: Optional[str] = None
     placement: str = "after"
+    start_index: Optional[int] = None
+    end_index: Optional[int] = None
 
 
 class SuggestedFix(BaseModel):
