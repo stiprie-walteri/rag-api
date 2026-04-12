@@ -1,12 +1,18 @@
-import os
 import json
 import logging
 import hashlib
-from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, Field
-from openai import AsyncOpenAI
+import os
+from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from json_repair import repair_json
+from openai import AsyncOpenAI
+from pydantic import BaseModel, Field
+
+from app.services.system_instructions import (
+    get_instruction_text,
+    load_instruction_set,
+    render_instruction_template,
+)
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -15,8 +21,12 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o")
 AGENT_MAX_TOOL_CALLS = int(os.getenv("AGENT_MAX_TOOL_CALLS", "25"))
 AGENT_REQUEST_TIMEOUT = int(os.getenv("AGENT_REQUEST_TIMEOUT", "120"))
+AGENT_SUMMARY_BATCH_CHARS = int(os.getenv("AGENT_SUMMARY_BATCH_CHARS", "18000"))
+AGENT_SUMMARY_SECTION_CHARS = int(os.getenv("AGENT_SUMMARY_SECTION_CHARS", "1800"))
 
 _client: Optional[AsyncOpenAI] = None
+
+
 def get_openrouter_client() -> AsyncOpenAI:
     global _client
     if not _client:
@@ -27,6 +37,10 @@ def get_openrouter_client() -> AsyncOpenAI:
             api_key=OPENROUTER_API_KEY,
         )
     return _client
+
+
+def _load_evaluation_agent_instructions() -> dict[str, Any]:
+    return load_instruction_set("evaluation-agent.yaml")
 
 
 class ReasoningStep(BaseModel):
@@ -73,6 +87,7 @@ class TaskEvaluationResult(BaseModel):
     legislation_id: Optional[str] = None
     legislation_name: Optional[str] = None
     task: List[str]
+    status: str = "completed"
     exists: bool
     explanation: str
     missing_sections: List[str] = Field(default_factory=list)
@@ -83,12 +98,21 @@ class TaskEvaluationResult(BaseModel):
 
 def _format_toc(chunks: List[Dict[str, Any]]) -> str:
     toc_lines = []
-    for i, c in enumerate(chunks):
-        title = c.get("title") or "Unnamed Section"
-        level_prefix = "  " * (c.get("chunk_level", 1) - 1)
-        toc_lines.append(f"{level_prefix}{i}: {title} (Pages {c.get('start_page', '?')}-{c.get('end_page', '?')})")
+    current_doc = None
+    for i, chunk in enumerate(chunks):
+        title = chunk.get("title") or "Unnamed Section"
+        doc_part = title.split(" :: ")[0] if " :: " in title else None
+        if doc_part and doc_part != current_doc:
+            if current_doc is not None:
+                toc_lines.append("")
+            toc_lines.append(f"--- {doc_part} ---")
+            current_doc = doc_part
+        level_prefix = "  " * (chunk.get("chunk_level", 1) - 1)
+        toc_lines.append(
+            f"{level_prefix}{i}: {title} "
+            f"(Pages {chunk.get('start_page', '?')}-{chunk.get('end_page', '?')})"
+        )
     return "\n".join(toc_lines)
-
 
 def _clean_text(value: Any) -> str:
     if value is None:
@@ -364,27 +388,208 @@ def _issue_suggestions_complete(
     return True
 
 
+def _build_document_manifest(
+    chunks: List[Dict[str, Any]],
+    *,
+    instructions: dict[str, Any],
+) -> str:
+    doc_ranges: Dict[str, List[int]] = {}
+    for i, chunk in enumerate(chunks):
+        title = chunk.get("title") or ""
+        doc_title = title.split(" :: ")[0].strip() if " :: " in title else ""
+        if not doc_title:
+            doc_title = chunk.get("document_id", "Unknown Document")
+        doc_ranges.setdefault(doc_title, []).append(i)
+
+    if len(doc_ranges) <= 1:
+        return ""
+
+    items = [
+        render_instruction_template(
+            instructions,
+            "document_manifest.item",
+            position=idx,
+            doc_title=doc_title,
+            start_index=min(indexes),
+            end_index=max(indexes),
+        ).rstrip()
+        for idx, (doc_title, indexes) in enumerate(doc_ranges.items(), 1)
+    ]
+
+    return render_instruction_template(
+        instructions,
+        "document_manifest.block",
+        document_count=len(doc_ranges),
+        items="\n".join(items),
+    )
+
+
+def _compact_text(text: str, *, max_chars: int) -> str:
+    normalized = " ".join((text or "").split())
+    if len(normalized) <= max_chars:
+        return normalized
+
+    clipped = normalized[:max_chars].rstrip()
+    last_space = clipped.rfind(" ")
+    if last_space > max_chars // 2:
+        clipped = clipped[:last_space]
+    return f"{clipped}..."
+
+
+def _build_summary_batches(chunks: List[Dict[str, Any]]) -> List[str]:
+    batches: List[str] = []
+    current_batch: List[str] = []
+    current_size = 0
+
+    for idx, chunk in enumerate(chunks):
+        title = chunk.get("title") or "Unnamed Section"
+        text_content = _compact_text(
+            str(chunk.get("text_content", "")),
+            max_chars=AGENT_SUMMARY_SECTION_CHARS,
+        )
+        batch_part = (
+            f"Section {idx}\n"
+            f"Title: {title}\n"
+            f"Pages: {chunk.get('start_page', '?')}-{chunk.get('end_page', '?')}\n"
+            f"Excerpt:\n{text_content}"
+        )
+
+        if current_batch and current_size + len(batch_part) > AGENT_SUMMARY_BATCH_CHARS:
+            batches.append("\n\n".join(current_batch))
+            current_batch = []
+            current_size = 0
+
+        current_batch.append(batch_part)
+        current_size += len(batch_part)
+
+    if current_batch:
+        batches.append("\n\n".join(current_batch))
+
+    return batches
+
+
+async def _generate_plaintext_completion(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+) -> str:
+    client = get_openrouter_client()
+    response = await client.chat.completions.create(
+        model=OPENROUTER_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        timeout=AGENT_REQUEST_TIMEOUT,
+    )
+    return (response.choices[0].message.content or "").strip()
+
+
+async def build_exploratory_document_summary(
+    chunks: List[Dict[str, Any]],
+    *,
+    documents: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[str]:
+    if not chunks:
+        return None
+
+    try:
+        instructions = _load_evaluation_agent_instructions()
+        chunk_batches = _build_summary_batches(chunks)
+        if not chunk_batches:
+            return None
+
+        document_titles = [
+            str(item.get("title")).strip()
+            for item in (documents or [])
+            if str(item.get("title") or "").strip()
+        ]
+        if document_titles:
+            document_context = "Documents in corpus: " + ", ".join(document_titles[:20])
+        else:
+            document_context = f"Sections in corpus: {len(chunks)}"
+
+        batch_system_prompt = get_instruction_text(
+            instructions,
+            "exploratory_summary.batch_system_prompt",
+        )
+
+        batch_summaries: List[str] = []
+        for batch_index, batch_text in enumerate(chunk_batches, start=1):
+            batch_summary = await _generate_plaintext_completion(
+                system_prompt=batch_system_prompt,
+                user_prompt=render_instruction_template(
+                    instructions,
+                    "exploratory_summary.batch_user_prompt",
+                    document_context=document_context,
+                    batch_index=batch_index,
+                    batch_count=len(chunk_batches),
+                    batch_text=batch_text,
+                ),
+            )
+            if batch_summary:
+                batch_summaries.append(batch_summary)
+
+        if not batch_summaries:
+            return None
+
+        if len(batch_summaries) == 1:
+            return batch_summaries[0]
+
+        final_summary = await _generate_plaintext_completion(
+            system_prompt=get_instruction_text(
+                instructions,
+                "exploratory_summary.final_system_prompt",
+            ),
+            user_prompt=render_instruction_template(
+                instructions,
+                "exploratory_summary.final_user_prompt",
+                document_context=document_context,
+                batch_count=len(batch_summaries),
+                batch_summaries="\n\n".join(
+                    f"Batch summary {idx}:\n{summary}"
+                    for idx, summary in enumerate(batch_summaries, start=1)
+                ),
+            ),
+        )
+        return final_summary or "\n\n".join(batch_summaries)
+    except Exception as exc:
+        logger.warning("[eval] Failed to build exploratory summary: %s", exc)
+        return None
+
+
 async def evaluate_task_with_agent(
     task_list: List[str],
     chunks: List[Dict[str, Any]],
     system_prompt_override: Optional[str] = None,
     references: Optional[Dict[str, Dict[str, str]]] = None,
+    exploratory_summary: Optional[str] = None,
 ) -> TaskEvaluationResult:
     try:
         client = get_openrouter_client()
-    except ValueError as e:
+    except ValueError as exc:
         return TaskEvaluationResult(
             task=task_list,
             exists=False,
-            explanation=f"Agent setup failed: {str(e)}"
+            explanation=f"Agent setup failed: {str(exc)}",
         )
 
-    task_flattened = "\n".join(f"- {t}" for t in task_list)
+    instructions = _load_evaluation_agent_instructions()
+    task_flattened = "\n".join(f"- {task}" for task in task_list)
     toc_str = _format_toc(chunks)
+    document_manifest = _build_document_manifest(chunks, instructions=instructions)
     refs = references or {}
 
+    exploratory_summary_block = ""
+    if exploratory_summary:
+        exploratory_summary_block = render_instruction_template(
+            instructions,
+            "task_evaluation.exploratory_summary_block",
+            exploratory_summary=exploratory_summary,
+        )
+
     task_label = task_list[0][:60] + ("..." if len(task_list[0]) > 60 else "")
-    logger.info("[eval] Starting — task: %s | chunks available: %d", task_label, len(chunks))
+    logger.info("[eval] Starting - task: %s | chunks available: %d", task_label, len(chunks))
 
     output_format_block = """
 ==============================================================================
@@ -472,48 +677,44 @@ Field guidance:
 - GetSections(section_indexes) — retrieves the full text of document sections by TOC index.
 IMPORTANT: You CANNOT read the document without calling GetSections. The TOC only shows titles and page ranges — the actual content is only accessible via GetSections. You MUST call GetSections on every relevant section before drawing any conclusions."""
     if refs:
-        tools_description += "\n- GetLegislation(reference_ids) — retrieves regulatory reference texts by ID (e.g. R1, R3). Fetch references before evaluating tasks that cite them."
+        tools_description = (
+            f"{tools_description.rstrip()}\n"
+            f"{get_instruction_text(instructions, 'task_evaluation.tools_description_with_legislation')}"
+        )
+
+    toc_block = render_instruction_template(
+        instructions,
+        (
+            "task_evaluation.toc_block_with_heading"
+            if system_prompt_override
+            else "task_evaluation.toc_block_inline"
+        ),
+        toc_str=toc_str,
+    )
 
     if system_prompt_override:
-        system_prompt = f"""{system_prompt_override}
-
-==============================================================================
-DOCUMENT TABLE OF CONTENTS
-==============================================================================
-{toc_str}
-
-==============================================================================
-CURRENT TASK
-==============================================================================
-Please verify that the document contains information about this:
-{task_flattened}
-
-==============================================================================
-TOOLS
-==============================================================================
-{tools_description}
-
-{output_format_block}"""
+        system_prompt = render_instruction_template(
+            instructions,
+            "task_evaluation.system_prompt_with_override",
+            system_prompt_override=system_prompt_override,
+            document_manifest=document_manifest,
+            toc_block=toc_block,
+            exploratory_summary_block=exploratory_summary_block,
+            task_flattened=task_flattened,
+            tools_description=tools_description,
+            output_format_block=output_format_block,
+        )
     else:
-        system_prompt = f"""
-You are a document verification AI. Your job is to verify if the provided task components are explicitly mentioned or covered within the document.
-
-Do not use emojis anywhere in your response.
-
-CRITICAL: The TOC below shows section titles only. You CANNOT assess the document content from titles alone.
-You MUST call GetSections to read the actual text of any section before making a judgement.
-Never conclude a section is missing or incorrect without first fetching and reading it.
-
-TOC:
-{toc_str}
----
-Task:
-Please verify that the document contains information about this:
-{task_flattened}
-
-{tools_description}
-
-{output_format_block}"""
+        system_prompt = render_instruction_template(
+            instructions,
+            "task_evaluation.system_prompt_default",
+            document_manifest=document_manifest,
+            toc_block=toc_block,
+            exploratory_summary_block=exploratory_summary_block,
+            task_flattened=task_flattened,
+            tools_description=tools_description,
+            output_format_block=output_format_block,
+        )
 
     tools = [
         {
@@ -527,42 +728,50 @@ Please verify that the document contains information about this:
                         "section_indexes": {
                             "type": "array",
                             "items": {"type": "integer"},
-                            "description": "An array of integer indexes corresponding to the sections in the TOC."
+                            "description": "An array of integer indexes corresponding to the sections in the TOC.",
                         }
                     },
                     "required": ["section_indexes"],
                 },
-            }
+            },
         }
     ]
 
     if refs:
-        tools.append({
-            "type": "function",
-            "function": {
-                "name": "GetLegislation",
-                "description": "Retrieves the full text of regulatory references by their ID (e.g. R1, R3, R8). Use this to fetch legislation details before evaluating tasks that cite specific references.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "reference_ids": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "An array of reference IDs (e.g. [\"R1\", \"R3\"]) to retrieve."
-                        }
+        tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": "GetLegislation",
+                    "description": "Retrieves the full text of regulatory references by their ID (e.g. R1, R3, R8). Use this to fetch legislation details before evaluating tasks that cite specific references.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "reference_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "An array of reference IDs (e.g. [\"R1\", \"R3\"]) to retrieve.",
+                            }
+                        },
+                        "required": ["reference_ids"],
                     },
-                    "required": ["reference_ids"],
                 },
             }
-        })
+        )
 
-    user_msg = "Please begin your analysis, use GetSections to retrieve the text, and output the final JSON evaluation."
+    user_msg = get_instruction_text(
+        instructions,
+        "task_evaluation.user_message_base",
+    )
     if refs:
-        user_msg = "Please begin your analysis. Use GetLegislation to fetch the regulatory references cited by the task, use GetSections to retrieve the document text, and output the final JSON evaluation."
+        user_msg = get_instruction_text(
+            instructions,
+            "task_evaluation.user_message_with_legislation",
+        )
 
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_msg}
+        {"role": "user", "content": user_msg},
     ]
 
     reasoning_steps: List[ReasoningStep] = []
@@ -603,17 +812,22 @@ Please verify that the document contains information about this:
                     found_texts = []
                     for idx in indexes:
                         if 0 <= idx < len(chunks):
-                            c = chunks[idx]
-                            found_texts.append(f"--- Section {idx} ({c.get('title', 'Unknown')}) ---\n{c.get('text_content', '')}")
+                            chunk = chunks[idx]
+                            found_texts.append(
+                                f"--- Section {idx} ({chunk.get('title', 'Unknown')}) ---\n"
+                                f"{chunk.get('text_content', '')}"
+                            )
                         else:
                             found_texts.append(f"--- Section {idx} (NOT FOUND) ---")
 
                     tool_response_text = "\n\n".join(found_texts) if found_texts else "No sections retrieved."
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": tool_response_text
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": tool_response_text,
+                        }
+                    )
 
                 elif tool_call.function.name == "GetLegislation":
                     ref_ids = args.get("reference_ids", [])
@@ -630,11 +844,13 @@ Please verify that the document contains information about this:
                             found_refs.append(f"--- [{ref_id}] (NOT FOUND) ---")
 
                     tool_response_text = "\n\n".join(found_refs) if found_refs else "No references found."
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": tool_response_text
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": tool_response_text,
+                        }
+                    )
 
             section_titles = [
                 chunks[i].get("title") or f"Section {i}"
@@ -642,31 +858,32 @@ Please verify that the document contains information about this:
                 if 0 <= i < len(chunks)
             ]
 
-            step = ReasoningStep(
-                step=attempt + 1,
-                thought=thought,
-                sections_queried=all_indexes,
-                section_titles=section_titles,
-                references_queried=all_ref_ids,
+            reasoning_steps.append(
+                ReasoningStep(
+                    step=attempt + 1,
+                    thought=thought,
+                    sections_queried=all_indexes,
+                    section_titles=section_titles,
+                    references_queried=all_ref_ids,
+                )
             )
-            reasoning_steps.append(step)
 
             if thought:
                 logger.info(
-                    "[eval] Step %d — thought: %s",
+                    "[eval] Step %d - thought: %s",
                     attempt + 1,
                     thought[:200] + ("..." if len(thought) > 200 else ""),
                 )
             if all_indexes:
                 logger.info(
-                    "[eval] Step %d — fetching %d section(s): %s",
+                    "[eval] Step %d - fetching %d section(s): %s",
                     attempt + 1,
                     len(all_indexes),
                     ", ".join(f"{i} ({t})" for i, t in zip(all_indexes, section_titles)),
                 )
             if all_ref_ids:
                 logger.info(
-                    "[eval] Step %d — fetching %d reference(s): %s",
+                    "[eval] Step %d - fetching %d reference(s): %s",
                     attempt + 1,
                     len(all_ref_ids),
                     ", ".join(all_ref_ids),
@@ -674,19 +891,20 @@ Please verify that the document contains information about this:
             if attempt < AGENT_MAX_TOOL_CALLS - 1:
                 continue
 
-            # Last attempt exhausted — force a final answer without tools
             logger.warning(
-                "[eval] Reached max tool call limit (%d) for task: %s — prompting for final answer",
+                "[eval] Reached max tool call limit (%d) for task: %s - prompting for final answer",
                 AGENT_MAX_TOOL_CALLS,
                 task_label,
             )
-            messages.append({
-                "role": "user",
-                "content": (
-                    "You have reached the maximum number of tool calls. "
-                    "Please provide your final JSON evaluation now without calling any more tools."
-                ),
-            })
+            messages.append(
+                {
+                    "role": "user",
+                    "content": get_instruction_text(
+                        instructions,
+                        "task_evaluation.max_tool_call_message",
+                    ),
+                }
+            )
             forced_response = await client.chat.completions.create(
                 model=OPENROUTER_MODEL,
                 messages=messages,
@@ -729,12 +947,12 @@ Please verify that the document contains information about this:
                 )
                 continue
 
-        except Exception as e:
-            logger.warning("[eval] Failed to parse agent JSON output: %s. Error: %s", final_text, e)
+        except Exception as exc:
+            logger.warning("[eval] Failed to parse agent JSON output: %s. Error: %s", final_text, exc)
             explanation = final_text
 
         logger.info(
-            "[eval] Done — steps: %d | exists: %s | missing: %d | incorrect: %d",
+            "[eval] Done - steps: %d | exists: %s | missing: %d | incorrect: %d",
             len(reasoning_steps),
             exists,
             len(missing_sections),

@@ -41,3 +41,7 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+sample-documents
+legislation-templates/example_legislation_alpha.yaml
+legislation-templates/example_legislation_beta.yaml

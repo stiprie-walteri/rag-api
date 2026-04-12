@@ -6,12 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.api.dependencies import require_docstore, sync_authenticated_org
-from app.api.routes.documents import DocumentListResponse, _to_document_list_item
+from app.api.routes.documents import DocumentListResponse, _augment_compliance_result, _to_document_list_item
 from app.core.auth import AuthContext, get_auth_context
 from app.services.evaluation import state as eval_state
 from app.services.evaluation.agent import (
     DocumentationIssue,
     TaskEvaluationResult,
+    build_exploratory_document_summary,
     evaluate_task_with_agent,
 )
 from app.services.legislation.templates import get_legislation_template, validate_template_ids
@@ -139,6 +140,27 @@ async def _run_project_evaluation_background(
             ),
             phase="setup",
         )
+        await eval_state.update_progress(
+            job_id,
+            current_task=None,
+            completed_count=0,
+            status_message="Building exploratory document summary.",
+            activity_message="Started exploratory summary pass across the combined project corpus.",
+            phase="exploratory_summary",
+        )
+        exploratory_summary = await build_exploratory_document_summary(
+            chunks_raw,
+            documents=documents,
+        )
+        if exploratory_summary:
+            await eval_state.update_progress(
+                job_id,
+                current_task=None,
+                completed_count=0,
+                status_message="Exploratory summary ready. Starting task analysis.",
+                activity_message="Prepared exploratory summary for downstream task analysis.",
+                phase="exploratory_summary_ready",
+            )
         total_tasks = sum(len(run["tasks"]) for run in evaluation_runs)
         results: list[TaskEvaluationResult | None] = [None] * total_tasks
         completed_count = 0
@@ -161,8 +183,13 @@ async def _run_project_evaluation_background(
                 }
             )
 
+        cancelled = False
+
         async def _run_one(idx: int, run: dict, task_list: list[str]) -> None:
-            nonlocal completed_count
+            nonlocal completed_count, cancelled
+            if await eval_state.is_cancel_requested(job_id):
+                cancelled = True
+                return
             async with state_lock:
                 await eval_state.update_progress(
                     job_id,
@@ -172,11 +199,15 @@ async def _run_project_evaluation_background(
                     activity_message=f"Started {run['template_name']} task: {task_list[0]}",
                     phase="task_start",
                 )
+            if await eval_state.is_cancel_requested(job_id):
+                cancelled = True
+                return
             result = await evaluate_task_with_agent(
                 task_list=task_list,
                 chunks=chunks_raw,
                 system_prompt_override=run.get("system_prompt_override"),
                 references=run.get("references"),
+                exploratory_summary=exploratory_summary,
             )
 
             # Enrich issues with start_index/end_index
@@ -206,43 +237,66 @@ async def _run_project_evaluation_background(
 
         await asyncio.gather(*(_run_one(i, run, task_list) for i, run, task_list in scheduled_runs))
 
+        # Fill un-analyzed tasks with "cancelled" status
+        for idx, run, task_list in scheduled_runs:
+            if results[idx] is None:
+                results[idx] = TaskEvaluationResult(
+                    legislation_id=run["template_id"],
+                    legislation_name=run["template_name"],
+                    task=task_list,
+                    status="cancelled",
+                    exists=False,
+                    explanation="Task was not analyzed due to evaluation cancellation.",
+                )
+
+        status_label = "cancelled" if cancelled else "complete"
         await eval_state.update_progress(
             job_id,
             current_task=None,
             completed_count=completed_count,
-            status_message="Finalizing project report.",
-            activity_message="All tasks finished. Building grouped legislation output.",
+            status_message=f"Finalizing project report ({status_label}).",
+            activity_message=f"Building grouped legislation output ({status_label}).",
             phase="finalize",
         )
 
         final_results = [r.model_dump() for r in results if r is not None]
+        legislations = []
+        for run_summary in run_summaries:
+            leg_results = [
+                results[idx].model_dump()
+                for idx in run_summary["result_indexes"]
+                if results[idx] is not None
+            ]
+            leg_entry = {
+                "template_id": run_summary["template_id"],
+                "template_name": run_summary["template_name"],
+                "task_count": run_summary["task_count"],
+                "results": leg_results,
+            }
+            _augment_compliance_result(leg_entry)
+            legislations.append(leg_entry)
+
         compliance_result = {
             "evaluation_job_id": job_id,
             "project_id": project_id,
             "documents": documents,
             "legislation_template_ids": [run["template_id"] for run in evaluation_runs],
-            "legislations": [
-                {
-                    "template_id": run_summary["template_id"],
-                    "template_name": run_summary["template_name"],
-                    "task_count": run_summary["task_count"],
-                    "results": [
-                        results[idx].model_dump()
-                        for idx in run_summary["result_indexes"]
-                        if results[idx] is not None
-                    ],
-                }
-                for run_summary in run_summaries
-            ],
+            "exploratory_summary": exploratory_summary,
+            "legislations": legislations,
             "results": final_results,
         }
+        _augment_compliance_result(compliance_result)
 
         await service.save_project_compliance_result(
             organization_id=organization_id,
             project_id=project_id,
             result=compliance_result,
         )
-        await eval_state.complete_job(job_id, status_message="Project analysis complete.")
+        await eval_state.clear_cancel(job_id)
+        if cancelled:
+            await eval_state.complete_job(job_id, status_message="Project analysis cancelled. Partial results saved.")
+        else:
+            await eval_state.complete_job(job_id, status_message="Project analysis complete.")
     except Exception as exc:
         await eval_state.fail_job(job_id, str(exc), status_message="Project analysis failed.")
     finally:
@@ -514,6 +568,42 @@ async def evaluate_project(
     )
 
 
+@router.post(
+    "/api/orgs/{organization_id}/projects/{project_id}/evaluate/cancel",
+    status_code=200,
+)
+async def cancel_project_evaluation(
+    organization_id: str,
+    project_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+):
+    service = require_docstore()
+    org_context = await sync_authenticated_org(
+        service, auth, requested_organization_id=organization_id, create_if_missing=False
+    )
+
+    try:
+        await service.get_project(
+            organization_id=org_context["organization_id"],
+            project_id=project_id,
+            actor_user_id=auth.user_id,
+        )
+    except ProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OrganizationMismatchError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    job_id = await eval_state.get_current_job_id(_project_target_key(project_id))
+    if not job_id:
+        raise HTTPException(status_code=404, detail="No running evaluation found for this project.")
+
+    success = await eval_state.request_cancel(job_id)
+    if not success:
+        raise HTTPException(status_code=409, detail="Evaluation is not running or has already finished.")
+
+    return {"job_id": job_id, "status": "cancelling", "message": "Cancellation requested. Completed results will be saved."}
+
+
 @router.get(
     "/api/orgs/{organization_id}/projects/{project_id}/evaluation/status",
     response_model=ProjectEvaluationStatusResponse,
@@ -604,6 +694,11 @@ async def get_project_compliance_result(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except OrganizationMismatchError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    if compliance_result:
+        for leg in compliance_result.get("legislations", []):
+            _augment_compliance_result(leg)
+        _augment_compliance_result(compliance_result)
 
     return ProjectComplianceResponse(project_id=project_id, compliance_result=compliance_result)
 

@@ -171,6 +171,12 @@ Save as a new document version:
 
 The request may also send full `issues` objects instead of `issue_ids`, which is useful for project-level issues or unsaved frontend state. The response includes `patched_content_md`, per-issue `applications`, counts for applied/skipped/failed suggestions, and `saved_version` when `save` is true. Saved suggestion edits regenerate Markdown chunks for the new version so the edited document can be evaluated again.
 
+## System instructions
+- Editable prompt files live in `system-instructions/`.
+- The evaluation agent uses `system-instructions/evaluation-agent.yaml`.
+- The legislation comparison script uses `system-instructions/legislation-compare.yaml`.
+- You can override the directory with `SYSTEM_INSTRUCTIONS_DIR`.
+
 ## Upload request shape
 `multipart/form-data`:
 - `file` (`.md` / Markdown file, required)

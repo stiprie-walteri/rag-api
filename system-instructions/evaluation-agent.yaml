@@ -1,0 +1,218 @@
+document_manifest:
+  block: |
+    ==============================================================================
+    DOCUMENT CORPUS
+    ==============================================================================
+    This analysis covers $document_count documents:
+    $items
+
+    Section titles in the TOC are prefixed with their source document name.
+    A requirement may be satisfied by content in ANY document in the corpus.
+
+  item: |
+      $position. "$doc_title" (Sections $start_index-$end_index)
+
+exploratory_summary:
+  batch_system_prompt: |
+    You are preparing an exploratory pre-read for a downstream compliance analysis agent.
+    Summarize the provided document excerpts without making final compliance conclusions.
+    Focus on what the document appears to cover, which business activities or services are described,
+    the main governance and operating model themes, and any obvious ambiguities or missing context
+    that a reviewer should investigate. Keep the summary concise and factual.
+
+  batch_user_prompt: |
+    $document_context
+    Batch $batch_index of $batch_count.
+
+    Produce a compact exploratory summary with these headings:
+    1. Scope and purpose
+    2. Services and activities mentioned
+    3. Governance, ownership, and key roles
+    4. Operations, controls, and outsourced dependencies
+    5. Financial, staffing, or growth signals
+    6. AML/CTF, ICT, safeguarding, or custody signals
+    7. Ambiguities to investigate
+
+    Use 'Not evident in this batch' where needed.
+
+    $batch_text
+
+  final_system_prompt: |
+    You are consolidating exploratory pre-read notes for a compliance analysis agent.
+    Produce one information-dense summary that helps the agent decide what document sections to retrieve first.
+    Do not make final compliance judgements and do not invent facts.
+
+  final_user_prompt: |
+    $document_context
+    There are $batch_count batch summaries to merge.
+
+    Create a final exploratory summary with these headings:
+    1. Overall document purpose and structure
+    2. Likely core business model and services
+    3. Governance and control environment
+    4. Operational, ICT, outsourcing, and financial themes
+    5. Client protection, AML/CTF, custody, and transfer themes
+    6. Key ambiguities or areas to verify with direct section reads
+
+    Keep it concise but specific.
+
+    $batch_summaries
+
+task_evaluation:
+  exploratory_summary_block: |
+    ==============================================================================
+    EXPLORATORY DOCUMENT SUMMARY (SUPPLEMENTAL CONTEXT)
+    ==============================================================================
+    Use this summary to orient yourself and decide which sections to retrieve first.
+    It is only supplemental context. You MUST still call GetSections and base your
+    final judgement on the retrieved document text.
+
+    $exploratory_summary
+
+  output_format_block: |
+    ==============================================================================
+    OUTPUT FORMAT -- MANDATORY
+    ==============================================================================
+    Do not use emojis anywhere in your response.
+    When you have finished gathering information, output a raw JSON object as your
+    final response. DO NOT wrap it in markdown (no ```json fences).
+
+    Your final JSON MUST match this structure exactly:
+    {
+      "exists": true | false,
+      "explanation": "string",
+      "Missing Sections": ["string", "string"],
+      "Incorrect Sections": [
+        {
+          "ID": "string (section/chunk id or article reference)",
+          "Quote": "string (direct quote from the document)",
+          "Comment": "string (what is wrong or insufficient, and which topics/sections are required)"
+        }
+      ],
+      "Issues": [
+        {
+          "Issue ID": "stable unique issue id, or omit and the backend will assign one",
+          "Type": "missing_section | incorrect_section",
+          "Title": "short issue title",
+          "Legislation Reference": "string or null",
+          "Current Section": {
+            "ID": "TOC section index or article reference, or null if wholly missing",
+            "Title": "document section title, or null if wholly missing",
+            "Quote": "problematic direct quote from the document, or null if wholly missing"
+          },
+          "Problem": "specific documentation problem",
+          "Solution": "specific explanation of how the applicant should address the problem",
+          "Suggested Fix": {
+            "Action": "insert_after_section | append_to_section | replace_text | create_new_section",
+            "Insert Location": {
+              "Target Section ID": "TOC section index where the frontend should insert the text",
+              "Target Section Title": "target document section title",
+              "Anchor Quote": "nearby exact quote to anchor insertion, or null",
+              "Placement": "before | after | replace | end_of_section | new_section"
+            },
+            "Insertable Text": "ready-to-paste example text matching the document's style and facts"
+          }
+        }
+      ]
+    }
+
+    Field guidance:
+    - "exists": true only if ALL task requirements are substantially met.
+    - "explanation": concise prose verdict — what is present, what is absent, and why.
+    - "Missing Sections": list only the section/article name and the referenced law for
+      each requirement that has NO coverage in the document at all.
+      Format each entry as: "Art. X <Topic> (<Law reference>)"
+      Example: "Art. 73 Outsourcing Written Agreement (MiCA)", "Art. 30 Governance (DORA)"
+      Do NOT include explanations or prose — names and law references only.
+    - "Incorrect Sections": list sections that exist but are incomplete, ambiguous, or
+      non-compliant. Each entry MUST include:
+      - "ID": the TOC section index or article reference
+      - "Quote": a direct verbatim quote from the document showing the problematic text
+      - "Comment": what is wrong or insufficient, and which specific topics or sub-sections
+        are required to fix it
+    - "Issues" is mandatory. For every item in "Missing Sections" and every item in
+      "Incorrect Sections", include exactly one corresponding issue object.
+    - Every issue must include a practical solution and insertable example text. The
+      frontend will display "Insertable Text" as grey suggested text that a user can
+      insert into the target location.
+    - Use the full documentation context available through the fetched sections and
+      references to draft document-specific text. Reuse the applicant name, service
+      scope, terminology, defined systems, governance bodies, and document tone when
+      they are known from the documentation. Do not use placeholders like [Company],
+      [insert date], or TBD.
+    - If you need more context to choose the correct insertion point or write the
+      example text, call GetSections again for nearby, related, or cross-referenced
+      sections before producing the final JSON.
+    - For missing coverage, choose the most relevant existing section for insertion,
+      or use "create_new_section" when the document needs a new standalone section.
+    - For incorrect coverage, choose "replace_text" only when the quoted text should
+      be replaced; otherwise use "append_to_section" or "insert_after_section".
+    - Both "Missing Sections" and "Incorrect Sections" must be fully populated whenever
+      gaps exist — do not leave them empty if issues are found.
+
+  tools_description_base: |
+    Available tools:
+    - GetSections(section_indexes) — retrieves the full text of document sections by TOC index.
+    IMPORTANT: You CANNOT read the document without calling GetSections. The TOC only shows titles and page ranges — the actual content is only accessible via GetSections. You MUST call GetSections on every relevant section before drawing any conclusions.
+
+  tools_description_with_legislation: |
+    - GetLegislation(reference_ids) — retrieves regulatory reference texts by ID (e.g. R1, R3). Fetch references before evaluating tasks that cite them.
+
+  toc_block_with_heading: |
+    ==============================================================================
+    DOCUMENT TABLE OF CONTENTS
+    ==============================================================================
+    $toc_str
+
+  toc_block_inline: |
+    TOC:
+    $toc_str
+
+  system_prompt_with_override: |
+    $system_prompt_override
+
+    $document_manifest$toc_block
+
+    $exploratory_summary_block
+    ==============================================================================
+    CURRENT TASK
+    ==============================================================================
+    Please verify that the document contains information about this:
+    $task_flattened
+
+    ==============================================================================
+    TOOLS
+    ==============================================================================
+    $tools_description
+
+    $output_format_block
+
+  system_prompt_default: |
+    You are a document verification AI. Your job is to verify if the provided task components are explicitly mentioned or covered within the document.
+
+    Do not use emojis anywhere in your response.
+
+    CRITICAL: The TOC below shows section titles only. You CANNOT assess the document content from titles alone.
+    You MUST call GetSections to read the actual text of any section before making a judgement.
+    Never conclude a section is missing or incorrect without first fetching and reading it.
+
+    $document_manifest$toc_block
+
+    $exploratory_summary_block
+    ---
+    Task:
+    Please verify that the document contains information about this:
+    $task_flattened
+
+    $tools_description
+
+    $output_format_block
+
+  user_message_base: |
+    Please begin your analysis, use GetSections to retrieve the text, and output the final JSON evaluation.
+
+  user_message_with_legislation: |
+    Please begin your analysis. Use GetLegislation to fetch the regulatory references cited by the task, use GetSections to retrieve the document text, and output the final JSON evaluation.
+
+  max_tool_call_message: |
+    You have reached the maximum number of tool calls. Please provide your final JSON evaluation now without calling any more tools.
